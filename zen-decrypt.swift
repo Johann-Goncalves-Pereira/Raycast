@@ -199,19 +199,19 @@ if isMounted {
 }
 
 if isMounted {
-    print("Opening volume at \(expectedMountPoint)...")
-    let openVolumeTask = Process()
-    openVolumeTask.launchPath = "/usr/bin/open"
-    openVolumeTask.arguments = [expectedMountPoint]
+    // print("Opening volume at \(expectedMountPoint)...")
+    // let openVolumeTask = Process()
+    // openVolumeTask.launchPath = "/usr/bin/open"
+    // openVolumeTask.arguments = [expectedMountPoint]
     do {
-        try openVolumeTask.run()
-        openVolumeTask.waitUntilExit()
-        if openVolumeTask.terminationStatus != 0 {
-            print("Error opening the mounted volume \(expectedMountPoint).")
-            // Don't exit yet, still try to open Zen Browser if user wants
-        } else {
-            print("Successfully requested to open \(expectedMountPoint).")
-        }
+        // try openVolumeTask.run()
+        // openVolumeTask.waitUntilExit()
+        // if openVolumeTask.terminationStatus != 0 {
+        //     print("Error opening the mounted volume \(expectedMountPoint).")
+        //     // Don't exit yet, still try to open Zen Browser if user wants
+        // } else {
+        //     print("Successfully requested to open \(expectedMountPoint).")
+        // }
 
         // --- BEGIN MODIFICATION: Open Zen Browser and wait for it to close ---
         print("Attempting to open Zen Browser...")
