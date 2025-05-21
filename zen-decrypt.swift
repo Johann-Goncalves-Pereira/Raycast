@@ -312,5 +312,3 @@ if isMounted {
     print("DMG was not mounted. Cannot open.")
     exit(1)
 }
-
-print("--- Script finished. ---")
