@@ -25,25 +25,6 @@ let fileManager = FileManager.default
 let task = Process()
 let pipe = Pipe()
 
-// Open Proton Pass first
-let protonPassPath = "/Applications/Proton Pass.app"
-if fileManager.fileExists(atPath: protonPassPath) {
-    print("Opening Proton Pass...")
-    let openProtonTask = Process()
-    openProtonTask.launchPath = "/usr/bin/open"
-    openProtonTask.arguments = [protonPassPath]
-
-    do {
-        try openProtonTask.run()
-        print("Proton Pass opened successfully")
-    } catch {
-        print("Warning: Failed to open Proton Pass: \(error)")
-        // Continue with the script even if Proton Pass fails to open
-    }
-} else {
-    print("Warning: Proton Pass not found at '\(protonPassPath)'")
-}
-
 // Check if the DMG file exists
 guard fileManager.fileExists(atPath: dmgPath) else {
     print("Error: DMG file not found at \(dmgPath)")
@@ -132,9 +113,30 @@ var isMounted = actualMountPoint != nil
 if isMounted {
     if let mountPath = actualMountPoint {
         expectedMountPoint = mountPath  // Update expectedMountPoint if we found an actual one
-        print("\(volumeName) is already mounted at \(mountPath). Opening...")
+        print(
+            "\(volumeName) is already mounted at \(mountPath). Skipping Proton Pass and proceeding directly..."
+        )
     }
 } else {
+    // Only open Proton Pass if DMG is not already mounted
+    let protonPassPath = "/Applications/Proton Pass.app"
+    if fileManager.fileExists(atPath: protonPassPath) {
+        print("Opening Proton Pass...")
+        let openProtonTask = Process()
+        openProtonTask.launchPath = "/usr/bin/open"
+        openProtonTask.arguments = [protonPassPath]
+
+        do {
+            try openProtonTask.run()
+            print("Proton Pass opened successfully")
+        } catch {
+            print("Warning: Failed to open Proton Pass: \(error)")
+            // Continue with the script even if Proton Pass fails to open
+        }
+    } else {
+        print("Warning: Proton Pass not found at '\(protonPassPath)'")
+    }
+
     print("Attempting to mount \(dmgPath)...")
     print("IMPORTANT: If the DMG is encrypted, macOS will now ask for the password.")
     print("This script cannot enter the password for you.")
