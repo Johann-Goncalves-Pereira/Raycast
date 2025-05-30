@@ -25,6 +25,25 @@ let fileManager = FileManager.default
 let task = Process()
 let pipe = Pipe()
 
+// Open Proton Pass first
+let protonPassPath = "/Applications/Proton Pass.app"
+if fileManager.fileExists(atPath: protonPassPath) {
+    print("Opening Proton Pass...")
+    let openProtonTask = Process()
+    openProtonTask.launchPath = "/usr/bin/open"
+    openProtonTask.arguments = [protonPassPath]
+
+    do {
+        try openProtonTask.run()
+        print("Proton Pass opened successfully")
+    } catch {
+        print("Warning: Failed to open Proton Pass: \(error)")
+        // Continue with the script even if Proton Pass fails to open
+    }
+} else {
+    print("Warning: Proton Pass not found at '\(protonPassPath)'")
+}
+
 // Check if the DMG file exists
 guard fileManager.fileExists(atPath: dmgPath) else {
     print("Error: DMG file not found at \(dmgPath)")
@@ -199,29 +218,14 @@ if isMounted {
 }
 
 if isMounted {
-    // print("Opening volume at \(expectedMountPoint)...")
-    // let openVolumeTask = Process()
-    // openVolumeTask.launchPath = "/usr/bin/open"
-    // openVolumeTask.arguments = [expectedMountPoint]
     do {
-        // try openVolumeTask.run()
-        // openVolumeTask.waitUntilExit()
-        // if openVolumeTask.terminationStatus != 0 {
-        //     print("Error opening the mounted volume \(expectedMountPoint).")
-        //     // Don't exit yet, still try to open Zen Browser if user wants
-        // } else {
-        //     print("Successfully requested to open \(expectedMountPoint).")
-        // }
-
-        // --- BEGIN MODIFICATION: Open Zen Browser and wait for it to close ---
         print("Attempting to open Zen Browser...")
-        let zenAppPath = "/Applications/Zen.app"  // Updated path
+        let zenAppPath = "/Applications/Zen.app"
 
+        // Open Zen and wait for it as before
         if fileManager.fileExists(atPath: zenAppPath) {
             let openZenTask = Process()
             openZenTask.launchPath = "/usr/bin/open"
-            // The -W flag waits for the application to quit
-            // Pass the full path to the application bundle
             openZenTask.arguments = ["-W", zenAppPath]
 
             print(
@@ -241,16 +245,13 @@ if isMounted {
                 exit(1)
             }
         } else {
-            print(
-                "Error: Zen Browser application not found at '\(zenAppPath)'."
-            )
+            print("Error: Zen Browser application not found at '\(zenAppPath)'.")
             print(
                 "Please ensure Zen Browser is installed at the correct location or update the script with the correct path."
             )
             print("Exiting script because Zen Browser could not be found.")
             exit(1)
         }
-        // --- END MODIFICATION: Open Zen Browser ---
 
         // --- BEGIN ADDITION: Eject DMG ---
         print("Attempting to eject DMG at \(expectedMountPoint)...")
