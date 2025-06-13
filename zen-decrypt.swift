@@ -276,11 +276,36 @@ func ejectDMG(at mountPoint: String) -> Bool {
     }
 }
 
+/// Checks if Zen application is already running
+/// - Returns: True if Zen is running, false otherwise
+func isZenRunning() -> Bool {
+    let task = Process()
+    task.launchPath = "/usr/bin/pgrep"
+    task.arguments = ["-x", "Zen"]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+
+    do {
+        try task.run()
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    } catch {
+        printError("Failed to check if Zen is running: \(error)")
+        return false
+    }
+}
+
 // MARK: - Application Management Functions
 
-/// Opens Proton Pass application if available
+/// Opens Proton Pass application if available and Zen is not running
 /// - Returns: True if opened successfully or if not critical, false if critical failure
 func openProtonPassIfAvailable() -> Bool {
+    // First check if Zen is already running
+    if isZenRunning() {
+        printStatus("Zen is already running, skipping Proton Pass launch")
+        return true
+    }
+
     guard fileExists(at: PathConfiguration.protonPassPath) else {
         printError("Proton Pass not found at '\(PathConfiguration.protonPassPath)'")
         return true // Not critical, continue
