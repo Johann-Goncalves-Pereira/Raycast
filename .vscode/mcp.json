@@ -1,0 +1,20 @@
+{
+  "inputs": [],
+  "servers": {
+    "fetch": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "mcp/fetch"]
+    },
+    "git": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--mount",
+        "type=bind,src=${workspaceFolder},dst=/workspace",
+        "mcp/git"
+      ]
+    }
+  }
+}
