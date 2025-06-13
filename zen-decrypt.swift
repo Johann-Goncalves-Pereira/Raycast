@@ -205,13 +205,20 @@ if isMounted {
         } else {
             print("Error mounting DMG. hdiutil exited with status \(task.terminationStatus).")
             if errorOutput.contains("Authentication_Canceled")
-                || errorOutput.contains("authentication error") || errorOutput.contains("cancelled")
+                || errorOutput.contains("authentication error") 
+                || errorOutput.contains("cancelled")
+                || output.contains("attach canceled")
+                || output.contains("hdiutil: attach canceled")
             {
                 print(
-                    "Mounting likely failed due to password prompt cancellation or incorrect password."
+                    "Mounting failed due to password prompt cancellation or incorrect password."
                 )
+                print("Will proceed with personal profile instead.")
+                // Don't exit here, let the script continue to open personal profile
+            } else {
+                print("DMG mounting failed for other reasons.")
+                exit(1)
             }
-            exit(1)
         }
     } catch {
         print("Failed to execute hdiutil: \(error)")
@@ -221,38 +228,65 @@ if isMounted {
 
 if isMounted {
     do {
-        print("Attempting to open Zen Browser...")
+        print("Profile successfully decrypted. Opening Zen Browser with secure profile...")
         let zenAppPath = "/Applications/Zen.app"
+        let secureProfilePath = "/Volumes/Profile Secure/j3wki3fc.Secure"
 
-        // Open Zen and wait for it as before
-        if fileManager.fileExists(atPath: zenAppPath) {
-            let openZenTask = Process()
-            openZenTask.launchPath = "/usr/bin/open"
-            openZenTask.arguments = ["-W", zenAppPath]
+        // Check if the secure profile exists
+        if fileManager.fileExists(atPath: secureProfilePath) {
+            print("Secure profile found at: \(secureProfilePath)")
+            
+            if fileManager.fileExists(atPath: zenAppPath) {
+                let openZenTask = Process()
+                openZenTask.launchPath = "/usr/bin/open"
+                openZenTask.arguments = ["-W", zenAppPath, "--args", "--profile", secureProfilePath]
 
-            print(
-                "Zen Browser at '\(zenAppPath)' will be opened. The script will wait for it to be closed before ejecting the DMG."
-            )
-
-            try openZenTask.run()
-            openZenTask.waitUntilExit()  // This waits because of the -W flag
-
-            if openZenTask.terminationStatus == 0 {
-                print("Zen Browser was closed successfully.")
-            } else {
                 print(
-                    "Zen Browser (at '\(zenAppPath)') exited with status \(openZenTask.terminationStatus)."
+                    "Zen Browser will be opened with secure profile. The script will wait for it to be closed before ejecting the DMG."
                 )
-                print("Exiting script because Zen Browser did not close successfully.")
+
+                try openZenTask.run()
+                openZenTask.waitUntilExit()  // This waits because of the -W flag
+
+                if openZenTask.terminationStatus == 0 {
+                    print("Zen Browser was closed successfully.")
+                } else {
+                    print(
+                        "Zen Browser exited with status \(openZenTask.terminationStatus)."
+                    )
+                    print("Exiting script because Zen Browser did not close successfully.")
+                    exit(1)
+                }
+            } else {
+                print("Error: Zen Browser application not found at '\(zenAppPath)'.")
+                print(
+                    "Please ensure Zen Browser is installed at the correct location or update the script with the correct path."
+                )
+                print("Exiting script because Zen Browser could not be found.")
                 exit(1)
             }
         } else {
-            print("Error: Zen Browser application not found at '\(zenAppPath)'.")
-            print(
-                "Please ensure Zen Browser is installed at the correct location or update the script with the correct path."
-            )
-            print("Exiting script because Zen Browser could not be found.")
-            exit(1)
+            print("Warning: Secure profile not found at '\(secureProfilePath)'")
+            print("Opening Zen Browser without specific profile...")
+            
+            if fileManager.fileExists(atPath: zenAppPath) {
+                let openZenTask = Process()
+                openZenTask.launchPath = "/usr/bin/open"
+                openZenTask.arguments = ["-W", zenAppPath]
+
+                try openZenTask.run()
+                openZenTask.waitUntilExit()
+
+                if openZenTask.terminationStatus == 0 {
+                    print("Zen Browser was closed successfully.")
+                } else {
+                    print("Zen Browser exited with status \(openZenTask.terminationStatus).")
+                    exit(1)
+                }
+            } else {
+                print("Error: Zen Browser application not found at '\(zenAppPath)'.")
+                exit(1)
+            }
         }
 
         // --- BEGIN ADDITION: Eject DMG ---
@@ -312,6 +346,44 @@ if isMounted {
         exit(1)
     }
 } else {
-    print("DMG was not mounted. Cannot open.")
-    exit(1)
+    print("DMG was not mounted or password was incorrect. Opening Zen Browser with personal profile...")
+    let zenAppPath = "/Applications/Zen.app"
+    let personalProfilePath = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
+    
+    // Expand the tilde in the path
+    let expandedPersonalProfilePath = NSString(string: personalProfilePath).expandingTildeInPath
+    
+    print("Using personal profile at: \(expandedPersonalProfilePath)")
+    
+    if fileManager.fileExists(atPath: zenAppPath) {
+        do {
+            let openZenTask = Process()
+            openZenTask.launchPath = "/usr/bin/open"
+            
+            // Check if the personal profile exists
+            if fileManager.fileExists(atPath: expandedPersonalProfilePath) {
+                openZenTask.arguments = [zenAppPath, "--args", "--profile", expandedPersonalProfilePath]
+                print("Opening Zen Browser with personal profile...")
+            } else {
+                openZenTask.arguments = [zenAppPath]
+                print("Personal profile not found. Opening Zen Browser with default profile...")
+            }
+            
+            try openZenTask.run()
+            openZenTask.waitUntilExit()
+            
+            if openZenTask.terminationStatus == 0 {
+                print("Zen Browser opened successfully with personal profile.")
+            } else {
+                print("Zen Browser exited with status \(openZenTask.terminationStatus).")
+            }
+        } catch {
+            print("Failed to open Zen Browser: \(error)")
+            exit(1)
+        }
+    } else {
+        print("Error: Zen Browser application not found at '\(zenAppPath)'.")
+        print("Please ensure Zen Browser is installed at the correct location.")
+        exit(1)
+    }
 }
