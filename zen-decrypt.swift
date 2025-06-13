@@ -16,31 +16,101 @@
 
 import Foundation
 
-// --- Configuration ---
-// Path from your error message
-let dmgPath = "/Users/johannpereira/Movies/Profile.dmg"
-// --- End Configuration ---
+// MARK: - Configuration & Constants
 
-let fileManager = FileManager.default
-let task = Process()
-let pipe = Pipe()
-
-// Check if the DMG file exists
-guard fileManager.fileExists(atPath: dmgPath) else {
-    print("Error: DMG file not found at \(dmgPath)")
-    exit(1)
+/// Path configurations for the application
+struct PathConfiguration {
+    static let dmgPath = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
+    static let protonPassPath = "/Applications/Proton Pass.app"
+    static let zenAppPath = "/Applications/Zen.app"
+    static let secureProfilePath = "/Volumes/Profile Secure/j3wki3fc.Secure"
+    static let personalProfilePath = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
 }
 
-// Get the volume name (often the same as the DMG name without the extension)
-let dmgURL = URL(fileURLWithPath: dmgPath)
-let volumeName = dmgURL.deletingPathExtension().lastPathComponent
-var expectedMountPoint = "/Volumes/\(volumeName)"  // Default assumption
+/// Application constants
+struct Constants {
+    static let fileManager = FileManager.default
+    static let volumesPrefix = "/Volumes/"
+}
 
-print("--- Starting DMG Open Script ---")
-print("DMG Path: \(dmgPath)")
-print("Expected Volume Name: \(volumeName)")
+// MARK: - Data Models
 
-// Function to get current mounted volumes for a given disk image path
+/// Represents the output from hdiutil info command
+struct HDIUtilInfo: Codable {
+    let images: [HDIUtilImage]
+}
+
+/// Represents a disk image in hdiutil info output
+struct HDIUtilImage: Codable {
+    let imagePath: String
+    let systemEntities: [HDIUtilSystemEntity]?
+    
+    enum CodingKeys: String, CodingKey {
+        case imagePath = "image-path"
+        case systemEntities = "system-entities"
+    }
+}
+
+/// Represents a system entity within a disk image
+struct HDIUtilSystemEntity: Codable {
+    let contentHint: String?
+    let mountPoint: String?
+    let volumeKind: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case contentHint = "content-hint"
+        case mountPoint = "mount-point"
+        case volumeKind = "volume-kind"
+    }
+}
+
+// MARK: - Utility Functions
+
+/// Validates if a file exists at the given path
+/// - Parameter path: The file path to check
+/// - Returns: True if file exists, false otherwise
+func fileExists(at path: String) -> Bool {
+    return Constants.fileManager.fileExists(atPath: path)
+}
+
+/// Gets the volume name from a DMG file path
+/// - Parameter dmgPath: Path to the DMG file
+/// - Returns: The expected volume name
+func getVolumeNameFromDMG(_ dmgPath: String) -> String {
+    let dmgURL = URL(fileURLWithPath: dmgPath)
+    return dmgURL.deletingPathExtension().lastPathComponent
+}
+
+/// Expands tilde in file paths to full home directory path
+/// - Parameter path: Path potentially containing tilde
+/// - Returns: Expanded path
+func expandTildePath(_ path: String) -> String {
+    return NSString(string: path).expandingTildeInPath
+}
+
+/// Prints a formatted status message
+/// - Parameter message: The message to print
+func printStatus(_ message: String) {
+    print("🔧 \(message)")
+}
+
+/// Prints a formatted error message
+/// - Parameter message: The error message to print
+func printError(_ message: String) {
+    print("❌ \(message)")
+}
+
+/// Prints a formatted success message
+/// - Parameter message: The success message to print
+func printSuccess(_ message: String) {
+    print("✅ \(message)")
+}
+
+// MARK: - DMG Management Functions
+
+/// Gets the current mount point for a DMG file if it's already mounted
+/// - Parameter imagePath: Path to the DMG file
+/// - Returns: Mount point path if mounted, nil otherwise
 func getMountPointForDMG(imagePath: String) -> String? {
     let task = Process()
     task.launchPath = "/usr/bin/hdiutil"
@@ -56,6 +126,7 @@ func getMountPointForDMG(imagePath: String) -> String? {
         if task.terminationStatus == 0 {
             let plistDecoder = PropertyListDecoder()
             if let plist = try? plistDecoder.decode(HDIUtilInfo.self, from: data) {
+                // Search through all mounted images
                 for image in plist.images {
                     if image.imagePath == imagePath {
                         if let systemEntities = image.systemEntities {
@@ -70,320 +141,309 @@ func getMountPointForDMG(imagePath: String) -> String? {
             }
         }
     } catch {
-        print("Error getting hdiutil info: \(error)")
+        printError("Error getting hdiutil info: \(error)")
     }
     return nil
 }
 
-// Define Plist structures for hdiutil info
-struct HDIUtilInfo: Codable {
-    let images: [HDIUtilImage]
-
-    enum CodingKeys: String, CodingKey {
-        case images = "images"
-    }
+/// Checks if DMG is currently mounted and returns mount status
+/// - Parameter dmgPath: Path to the DMG file
+/// - Returns: Tuple containing mount status and mount point if available
+func checkDMGMountStatus(_ dmgPath: String) -> (isMounted: Bool, mountPoint: String?) {
+    let mountPoint = getMountPointForDMG(imagePath: dmgPath)
+    return (mountPoint != nil, mountPoint)
 }
 
-struct HDIUtilImage: Codable {
-    let imagePath: String
-    let systemEntities: [HDIUtilSystemEntity]?
-
-    enum CodingKeys: String, CodingKey {
-        case imagePath = "image-path"
-        case systemEntities = "system-entities"
-    }
-}
-
-struct HDIUtilSystemEntity: Codable {
-    let contentHint: String?
-    let mountPoint: String?
-    let volumeKind: String?
-
-    enum CodingKeys: String, CodingKey {
-        case contentHint = "content-hint"
-        case mountPoint = "mount-point"
-        case volumeKind = "volume-kind"
-    }
-}
-
-// Check if the DMG is already mounted by inspecting hdiutil info
-var actualMountPoint = getMountPointForDMG(imagePath: dmgPath)
-var isMounted = actualMountPoint != nil
-
-if isMounted {
-    if let mountPath = actualMountPoint {
-        expectedMountPoint = mountPath  // Update expectedMountPoint if we found an actual one
-        print(
-            "\(volumeName) is already mounted at \(mountPath). Skipping Proton Pass and proceeding directly..."
-        )
-    }
-} else {
-    // Only open Proton Pass if DMG is not already mounted
-    let protonPassPath = "/Applications/Proton Pass.app"
-    if fileManager.fileExists(atPath: protonPassPath) {
-        print("Opening Proton Pass...")
-        let openProtonTask = Process()
-        openProtonTask.launchPath = "/usr/bin/open"
-        openProtonTask.arguments = [protonPassPath]
-
-        do {
-            try openProtonTask.run()
-            print("Proton Pass opened successfully")
-        } catch {
-            print("Warning: Failed to open Proton Pass: \(error)")
-            // Continue with the script even if Proton Pass fails to open
-        }
-    } else {
-        print("Warning: Proton Pass not found at '\(protonPassPath)'")
-    }
-
-    print("Attempting to mount \(dmgPath)...")
+/// Mounts a DMG file and returns the mount point
+/// - Parameter dmgPath: Path to the DMG file to mount
+/// - Returns: Mount point if successful, nil if failed
+func mountDMG(_ dmgPath: String) -> String? {
+    printStatus("Attempting to mount \(dmgPath)...")
     print("IMPORTANT: If the DMG is encrypted, macOS will now ask for the password.")
     print("This script cannot enter the password for you.")
 
+    let task = Process()
+    let pipe = Pipe()
+    
     task.launchPath = "/usr/bin/hdiutil"
-    // Removed -quiet, added -mountrandom /tmp to handle cases where /Volumes/Name is taken
-    // -nobrowse still prevents Finder from opening it, we'll do it manually
-    // Removed -owners_on as it was causing an error
     task.arguments = ["attach", dmgPath, "-nobrowse"]
     task.standardOutput = pipe
-    task.standardError = pipe  // Capture error output as well
+    task.standardError = pipe
 
     do {
         try task.run()
-
-        // It's important to read the data *while* the task is running or right after,
-        // especially if it's interactive or produces a lot of output.
+        
         let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = (task.standardError as! Pipe).fileHandleForReading.readDataToEndOfFile()  // This assumes standardError is a Pipe
+        task.waitUntilExit()
 
-        task.waitUntilExit()  // Wait for the process to complete
+        let output = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let output =
-            String(data: outputData, encoding: .utf8)?.trimmingCharacters(
-                in: .whitespacesAndNewlines) ?? ""
-        let errorOutput =
-            String(data: errorData, encoding: .utf8)?.trimmingCharacters(
-                in: .whitespacesAndNewlines) ?? ""
-
-        print("hdiutil attach command finished.")
-        print("Termination Status: \(task.terminationStatus)")
-        if !output.isEmpty { print("Standard Output:\n\(output)") }
-        if !errorOutput.isEmpty { print("Standard Error:\n\(errorOutput)") }
+        printStatus("hdiutil attach command finished.")
+        printStatus("Termination Status: \(task.terminationStatus)")
+        
+        if !output.isEmpty { 
+            print("Output:\n\(output)") 
+        }
 
         if task.terminationStatus == 0 {
-            // Try to get the mount point again after attach
-            actualMountPoint = getMountPointForDMG(imagePath: dmgPath)
-            if let mountPath = actualMountPoint {
-                isMounted = true
-                expectedMountPoint = mountPath
-                print("DMG mounted successfully at \(mountPath).")
+            // Try to get the mount point using hdiutil info
+            if let mountPoint = getMountPointForDMG(imagePath: dmgPath) {
+                printSuccess("DMG mounted successfully at \(mountPoint)")
+                return mountPoint
             } else {
-                // Fallback: hdiutil output parsing (less reliable than hdiutil info)
-                // Example output: /dev/diskX\tTYPE\t/Volumes/MOUNT_NAME
-                let lines = output.components(separatedBy: .newlines)
-                for line in lines {
-                    let parts = line.split(separator: "\t")  // tab-separated
-                    if parts.count >= 3 && parts.last!.hasPrefix("/Volumes/") {
-                        actualMountPoint = String(parts.last!)
-                        isMounted = true
-                        expectedMountPoint = actualMountPoint!
-                        print(
-                            "DMG mounted successfully. Determined mount point: \(expectedMountPoint)"
-                        )
-                        break
-                    }
-                }
-                if !isMounted {
-                    print(
-                        "DMG attach command seemed to succeed (exit code 0) but could not determine mount point."
-                    )
-                    print("Please check if a password prompt appeared and was handled correctly.")
-                    exit(1)
-                }
+                // Fallback: parse hdiutil output
+                return parseMountPointFromOutput(output)
             }
         } else {
-            print("Error mounting DMG. hdiutil exited with status \(task.terminationStatus).")
-            if errorOutput.contains("Authentication_Canceled")
-                || errorOutput.contains("authentication error") 
-                || errorOutput.contains("cancelled")
-                || output.contains("attach canceled")
-                || output.contains("hdiutil: attach canceled")
-            {
-                print(
-                    "Mounting failed due to password prompt cancellation or incorrect password."
-                )
-                print("Will proceed with personal profile instead.")
-                // Don't exit here, let the script continue to open personal profile
-            } else {
-                print("DMG mounting failed for other reasons.")
-                exit(1)
-            }
+            return handleMountFailure(output: output, terminationStatus: task.terminationStatus)
         }
     } catch {
-        print("Failed to execute hdiutil: \(error)")
+        printError("Failed to execute hdiutil: \(error)")
+        return nil
+    }
+}
+
+/// Parses mount point from hdiutil attach output
+/// - Parameter output: The output string from hdiutil
+/// - Returns: Mount point if found, nil otherwise
+func parseMountPointFromOutput(_ output: String) -> String? {
+    let lines = output.components(separatedBy: .newlines)
+    for line in lines {
+        let parts = line.split(separator: "\t")
+        if parts.count >= 3 && parts.last!.hasPrefix(Constants.volumesPrefix) {
+            let mountPoint = String(parts.last!)
+            printSuccess("DMG mounted successfully. Determined mount point: \(mountPoint)")
+            return mountPoint
+        }
+    }
+    
+    printError("DMG attach seemed to succeed but could not determine mount point.")
+    print("Please check if a password prompt appeared and was handled correctly.")
+    return nil
+}
+
+/// Handles mount failure scenarios
+/// - Parameters:
+///   - output: Output from hdiutil command
+///   - terminationStatus: Exit status of hdiutil
+/// - Returns: nil (mount failed)
+func handleMountFailure(output: String, terminationStatus: Int32) -> String? {
+    printError("Error mounting DMG. hdiutil exited with status \(terminationStatus).")
+    
+    let authErrors = ["Authentication_Canceled", "authentication error", "cancelled", 
+                     "attach canceled", "hdiutil: attach canceled"]
+    
+    if authErrors.contains(where: output.contains) {
+        printError("Mounting failed due to password prompt cancellation or incorrect password.")
+        printStatus("Will proceed with personal profile instead.")
+        return nil // Signal to use personal profile
+    } else {
+        printError("DMG mounting failed for other reasons.")
         exit(1)
     }
 }
 
-if isMounted {
+/// Safely ejects a mounted DMG
+/// - Parameter mountPoint: The mount point to eject
+/// - Returns: True if successful, false otherwise
+func ejectDMG(at mountPoint: String) -> Bool {
+    printStatus("Attempting to eject DMG at \(mountPoint)...")
+    
+    let task = Process()
+    task.launchPath = "/usr/bin/hdiutil"
+    task.arguments = ["detach", mountPoint]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = pipe
+
     do {
-        print("Profile successfully decrypted. Opening Zen Browser with secure profile...")
-        let zenAppPath = "/Applications/Zen.app"
-        let secureProfilePath = "/Volumes/Profile Secure/j3wki3fc.Secure"
+        try task.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
 
-        // Check if the secure profile exists
-        if fileManager.fileExists(atPath: secureProfilePath) {
-            print("Secure profile found at: \(secureProfilePath)")
-            
-            if fileManager.fileExists(atPath: zenAppPath) {
-                let openZenTask = Process()
-                openZenTask.launchPath = "/usr/bin/open"
-                openZenTask.arguments = ["-W", zenAppPath, "--args", "--profile", secureProfilePath]
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-                print(
-                    "Zen Browser will be opened with secure profile. The script will wait for it to be closed before ejecting the DMG."
-                )
-
-                try openZenTask.run()
-                openZenTask.waitUntilExit()  // This waits because of the -W flag
-
-                if openZenTask.terminationStatus == 0 {
-                    print("Zen Browser was closed successfully.")
-                } else {
-                    print(
-                        "Zen Browser exited with status \(openZenTask.terminationStatus)."
-                    )
-                    print("Exiting script because Zen Browser did not close successfully.")
-                    exit(1)
-                }
-            } else {
-                print("Error: Zen Browser application not found at '\(zenAppPath)'.")
-                print(
-                    "Please ensure Zen Browser is installed at the correct location or update the script with the correct path."
-                )
-                print("Exiting script because Zen Browser could not be found.")
-                exit(1)
-            }
+        if task.terminationStatus == 0 {
+            printSuccess("Successfully ejected \(mountPoint). Output: \(output)")
+            return true
         } else {
-            print("Warning: Secure profile not found at '\(secureProfilePath)'")
-            print("Opening Zen Browser without specific profile...")
-            
-            if fileManager.fileExists(atPath: zenAppPath) {
-                let openZenTask = Process()
-                openZenTask.launchPath = "/usr/bin/open"
-                openZenTask.arguments = ["-W", zenAppPath]
-
-                try openZenTask.run()
-                openZenTask.waitUntilExit()
-
-                if openZenTask.terminationStatus == 0 {
-                    print("Zen Browser was closed successfully.")
-                } else {
-                    print("Zen Browser exited with status \(openZenTask.terminationStatus).")
-                    exit(1)
-                }
-            } else {
-                print("Error: Zen Browser application not found at '\(zenAppPath)'.")
-                exit(1)
-            }
+            printError("Error ejecting DMG \(mountPoint). Status: \(task.terminationStatus). Output: \(output)")
+            return false
         }
-
-        // --- BEGIN ADDITION: Eject DMG ---
-        print("Attempting to eject DMG at \(expectedMountPoint)...")
-        let ejectTask = Process()
-        ejectTask.launchPath = "/usr/bin/hdiutil"
-        ejectTask.arguments = ["detach", expectedMountPoint]
-        let ejectPipe = Pipe()
-        ejectTask.standardOutput = ejectPipe
-        ejectTask.standardError = ejectPipe
-
-        try ejectTask.run()
-        let ejectData = ejectPipe.fileHandleForReading.readDataToEndOfFile()
-        ejectTask.waitUntilExit()
-
-        let ejectOutput =
-            String(data: ejectData, encoding: .utf8)?.trimmingCharacters(
-                in: .whitespacesAndNewlines) ?? ""
-
-        if ejectTask.terminationStatus == 0 {
-            print("Successfully ejected \(expectedMountPoint). Output: \(ejectOutput)")
-        } else {
-            print(
-                "Error ejecting DMG \(expectedMountPoint). Status: \(ejectTask.terminationStatus). Output: \(ejectOutput)"
-            )
-            // You might want to exit(1) here if ejection is critical
-        }
-        // --- END ADDITION: Eject DMG ---
-
     } catch {
-        print("Failed to open volume or manage Zen Browser/ejection: \(error)")
-        // If opening the volume failed catastrophically, we might not have a valid mount point to eject.
-        // However, if Zen Browser or eject failed, the mount point should still be valid.
-        // Consider if an eject attempt is still needed here.
-        // For now, if an error occurs in this block, we'll try to eject if actualMountPoint is set.
-        if let mountPath = actualMountPoint {
-            print(
-                "Attempting to eject \(mountPath) due to an error during the open/Zen Browser process."
-            )
-            let emergencyEjectTask = Process()
-            emergencyEjectTask.launchPath = "/usr/bin/hdiutil"
-            emergencyEjectTask.arguments = ["detach", mountPath]
-            do {
-                try emergencyEjectTask.run()
-                emergencyEjectTask.waitUntilExit()
-                if emergencyEjectTask.terminationStatus == 0 {
-                    print("Emergency eject successful for \(mountPath).")
-                } else {
-                    print(
-                        "Emergency eject failed for \(mountPath), status: \(emergencyEjectTask.terminationStatus)."
-                    )
-                }
-            } catch {
-                print("Failed to run emergency eject for \(mountPath): \(error)")
-            }
+        printError("Failed to run eject command for \(mountPoint): \(error)")
+        return false
+    }
+}
+
+// MARK: - Application Management Functions
+
+/// Opens Proton Pass application if available
+/// - Returns: True if opened successfully or if not critical, false if critical failure
+func openProtonPassIfAvailable() -> Bool {
+    guard fileExists(at: PathConfiguration.protonPassPath) else {
+        printError("Proton Pass not found at '\(PathConfiguration.protonPassPath)'")
+        return true // Not critical, continue
+    }
+    
+    printStatus("Opening Proton Pass...")
+    let task = Process()
+    task.launchPath = "/usr/bin/open"
+    task.arguments = [PathConfiguration.protonPassPath]
+
+    do {
+        try task.run()
+        printSuccess("Proton Pass opened successfully")
+        return true
+    } catch {
+        printError("Failed to open Proton Pass: \(error)")
+        return true // Continue even if Proton Pass fails
+    }
+}
+
+/// Opens Zen Browser with specified profile and waits for it to close
+/// - Parameters:
+///   - profilePath: Path to the browser profile
+///   - waitForClose: Whether to wait for the browser to close
+/// - Returns: True if successful, false otherwise
+func openZenBrowser(with profilePath: String?, waitForClose: Bool = true) -> Bool {
+    guard fileExists(at: PathConfiguration.zenAppPath) else {
+        printError("Zen Browser application not found at '\(PathConfiguration.zenAppPath)'.")
+        printError("Please ensure Zen Browser is installed at the correct location.")
+        return false
+    }
+    
+    let task = Process()
+    task.launchPath = "/usr/bin/open"
+    
+    var arguments = [PathConfiguration.zenAppPath]
+    if waitForClose {
+        arguments.insert("-W", at: 0) // Wait flag
+    }
+    
+    if let profilePath = profilePath, fileExists(at: profilePath) {
+        arguments.append(contentsOf: ["--args", "--profile", profilePath])
+        printStatus("Opening Zen Browser with profile: \(profilePath)")
+    } else {
+        printStatus("Opening Zen Browser with default profile...")
+    }
+    
+    task.arguments = arguments
+
+    do {
+        if waitForClose {
+            printStatus("Zen Browser will open. The script will wait for it to be closed before continuing.")
         }
+        
+        try task.run()
+        
+        if waitForClose {
+            task.waitUntilExit()
+        }
+        
+        if task.terminationStatus == 0 {
+            printSuccess("Zen Browser operation completed successfully.")
+            return true
+        } else {
+            printError("Zen Browser exited with status \(task.terminationStatus).")
+            return false
+        }
+    } catch {
+        printError("Failed to open Zen Browser: \(error)")
+        return false
+    }
+}
+
+// MARK: - Main Logic Functions
+
+/// Handles the secure profile workflow when DMG is mounted
+/// - Parameter mountPoint: The mount point of the DMG
+/// - Returns: True if successful, false otherwise
+func handleSecureProfile(mountPoint: String) -> Bool {
+    printSuccess("Profile successfully decrypted. Opening Zen Browser with secure profile...")
+    
+    defer {
+        // Always try to eject the DMG when done
+        if !ejectDMG(at: mountPoint) {
+            printError("Failed to eject DMG properly")
+        }
+    }
+    
+    // Check if secure profile exists
+    if fileExists(at: PathConfiguration.secureProfilePath) {
+        printStatus("Secure profile found at: \(PathConfiguration.secureProfilePath)")
+        return openZenBrowser(with: PathConfiguration.secureProfilePath, waitForClose: true)
+    } else {
+        printError("Secure profile not found at '\(PathConfiguration.secureProfilePath)'")
+        printStatus("Opening Zen Browser without specific profile...")
+        return openZenBrowser(with: nil, waitForClose: true)
+    }
+}
+
+/// Handles the personal profile workflow when DMG is not available
+/// - Returns: True if successful, false otherwise
+func handlePersonalProfile() -> Bool {
+    printStatus("DMG was not mounted or password was incorrect. Opening Zen Browser with personal profile...")
+    
+    let expandedPersonalProfilePath = expandTildePath(PathConfiguration.personalProfilePath)
+    printStatus("Using personal profile at: \(expandedPersonalProfilePath)")
+    
+    if fileExists(at: expandedPersonalProfilePath) {
+        printStatus("Opening Zen Browser with personal profile...")
+        return openZenBrowser(with: expandedPersonalProfilePath, waitForClose: false)
+    } else {
+        printStatus("Personal profile not found. Opening Zen Browser with default profile...")
+        return openZenBrowser(with: nil, waitForClose: false)
+    }
+}
+
+/// Main application workflow orchestrator
+func runZenDecryptWorkflow() {
+    printStatus("Starting DMG Open Script")
+    printStatus("DMG Path: \(PathConfiguration.dmgPath)")
+    
+    // Step 1: Validate DMG file exists
+    guard fileExists(at: PathConfiguration.dmgPath) else {
+        printError("DMG file not found at \(PathConfiguration.dmgPath)")
         exit(1)
     }
-} else {
-    print("DMG was not mounted or password was incorrect. Opening Zen Browser with personal profile...")
-    let zenAppPath = "/Applications/Zen.app"
-    let personalProfilePath = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
     
-    // Expand the tilde in the path
-    let expandedPersonalProfilePath = NSString(string: personalProfilePath).expandingTildeInPath
+    let volumeName = getVolumeNameFromDMG(PathConfiguration.dmgPath)
+    printStatus("Expected Volume Name: \(volumeName)")
     
-    print("Using personal profile at: \(expandedPersonalProfilePath)")
+    // Step 2: Check if DMG is already mounted
+    let (isMounted, currentMountPoint) = checkDMGMountStatus(PathConfiguration.dmgPath)
     
-    if fileManager.fileExists(atPath: zenAppPath) {
-        do {
-            let openZenTask = Process()
-            openZenTask.launchPath = "/usr/bin/open"
-            
-            // Check if the personal profile exists
-            if fileManager.fileExists(atPath: expandedPersonalProfilePath) {
-                openZenTask.arguments = [zenAppPath, "--args", "--profile", expandedPersonalProfilePath]
-                print("Opening Zen Browser with personal profile...")
-            } else {
-                openZenTask.arguments = [zenAppPath]
-                print("Personal profile not found. Opening Zen Browser with default profile...")
-            }
-            
-            try openZenTask.run()
-            openZenTask.waitUntilExit()
-            
-            if openZenTask.terminationStatus == 0 {
-                print("Zen Browser opened successfully with personal profile.")
-            } else {
-                print("Zen Browser exited with status \(openZenTask.terminationStatus).")
-            }
-        } catch {
-            print("Failed to open Zen Browser: \(error)")
+    if isMounted, let mountPoint = currentMountPoint {
+        printStatus("\(volumeName) is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
+        
+        if !handleSecureProfile(mountPoint: mountPoint) {
+            printError("Failed to handle secure profile workflow")
             exit(1)
         }
     } else {
-        print("Error: Zen Browser application not found at '\(zenAppPath)'.")
-        print("Please ensure Zen Browser is installed at the correct location.")
-        exit(1)
+        // Step 3: Open Proton Pass (not critical if it fails)
+        _ = openProtonPassIfAvailable()
+        
+        // Step 4: Attempt to mount DMG
+        if let mountPoint = mountDMG(PathConfiguration.dmgPath) {
+            if !handleSecureProfile(mountPoint: mountPoint) {
+                printError("Failed to handle secure profile workflow")
+                exit(1)
+            }
+        } else {
+            // Step 5: Fallback to personal profile
+            if !handlePersonalProfile() {
+                printError("Failed to handle personal profile workflow")
+                exit(1)
+            }
+        }
     }
+    
+    printSuccess("Zen Decrypt workflow completed successfully!")
 }
+
+// MARK: - Entry Point
+
+// Run the main workflow
+runZenDecryptWorkflow()
