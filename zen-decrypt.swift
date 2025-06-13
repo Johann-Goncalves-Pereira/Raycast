@@ -330,8 +330,9 @@ func openProtonPassIfAvailable() -> Bool {
 /// - Parameters:
 ///   - profilePath: Path to the browser profile
 ///   - waitForClose: Whether to wait for the browser to close
+///   - shouldKillProtonPass: Whether to kill Proton Pass after opening Zen
 /// - Returns: True if successful, false otherwise
-func openZenBrowser(with profilePath: String?, waitForClose: Bool = true) -> Bool {
+func openZenBrowser(with profilePath: String?, waitForClose: Bool = true, shouldKillProtonPass: Bool = true) -> Bool {
     guard fileExists(at: PathConfiguration.zenAppPath) else {
         printError("Zen Browser application not found at '\(PathConfiguration.zenAppPath)'.")
         printError("Please ensure Zen Browser is installed at the correct location.")
@@ -362,9 +363,13 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true) -> Boo
         
         try task.run()
         
-        // Kill Proton Pass right after Zen is opened
-        if !killProtonPass() {
-            printError("Failed to kill Proton Pass process")
+        // Kill Proton Pass right after Zen is opened, but only if shouldKillProtonPass is true
+        if shouldKillProtonPass {
+            if !killProtonPass() {
+                printError("Failed to kill Proton Pass process")
+            }
+        } else {
+            printStatus("Skipping Proton Pass termination as requested")
         }
         
         if waitForClose {
@@ -387,9 +392,11 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true) -> Boo
 // MARK: - Main Logic Functions
 
 /// Handles the secure profile workflow when DMG is mounted
-/// - Parameter mountPoint: The mount point of the DMG
+/// - Parameters:
+///   - mountPoint: The mount point of the DMG
+///   - shouldKillProtonPass: Whether to kill Proton Pass after opening Zen
 /// - Returns: True if successful, false otherwise
-func handleSecureProfile(mountPoint: String) -> Bool {
+func handleSecureProfile(mountPoint: String, shouldKillProtonPass: Bool = true) -> Bool {
     printSuccess("Profile successfully decrypted. Opening Zen Browser with secure profile...")
     
     defer {
@@ -402,11 +409,11 @@ func handleSecureProfile(mountPoint: String) -> Bool {
     // Check if secure profile exists
     if fileExists(at: PathConfiguration.secureProfilePath) {
         printStatus("Secure profile found at: \(PathConfiguration.secureProfilePath)")
-        return openZenBrowser(with: PathConfiguration.secureProfilePath, waitForClose: true)
+        return openZenBrowser(with: PathConfiguration.secureProfilePath, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
     } else {
         printError("Secure profile not found at '\(PathConfiguration.secureProfilePath)'")
         printStatus("Opening Zen Browser without specific profile...")
-        return openZenBrowser(with: nil, waitForClose: true)
+        return openZenBrowser(with: nil, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
     }
 }
 
@@ -447,7 +454,8 @@ func runZenDecryptWorkflow() {
     if isMounted, let mountPoint = currentMountPoint {
         printStatus("\(volumeName) is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
         
-        if !handleSecureProfile(mountPoint: mountPoint) {
+        // Pass a flag to avoid killing Proton Pass in this case
+        if !handleSecureProfile(mountPoint: mountPoint, shouldKillProtonPass: false) {
             printError("Failed to handle secure profile workflow")
             exit(1)
         }
@@ -457,6 +465,7 @@ func runZenDecryptWorkflow() {
         
         // Step 4: Attempt to mount DMG
         if let mountPoint = mountDMG(PathConfiguration.dmgPath) {
+            // In this case, we do want to kill Proton Pass (default behavior)
             if !handleSecureProfile(mountPoint: mountPoint) {
                 printError("Failed to handle secure profile workflow")
                 exit(1)
