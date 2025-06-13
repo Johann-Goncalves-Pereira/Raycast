@@ -362,6 +362,11 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true) -> Boo
         
         try task.run()
         
+        // Kill Proton Pass right after Zen is opened
+        if !killProtonPass() {
+            printError("Failed to kill Proton Pass process")
+        }
+        
         if waitForClose {
             task.waitUntilExit()
         }
@@ -472,3 +477,31 @@ func runZenDecryptWorkflow() {
 
 // Run the main workflow
 runZenDecryptWorkflow()
+
+/// Kills the Proton Pass process if it's running
+/// - Returns: True if process was killed or not running, false if there was an error
+func killProtonPass() -> Bool {
+    let task = Process()
+    task.launchPath = "/usr/bin/pkill"
+    task.arguments = ["-f", "Proton Pass"]
+    
+    do {
+        try task.run()
+        task.waitUntilExit()
+        
+        if task.terminationStatus == 0 {
+            printSuccess("Proton Pass process killed successfully")
+            return true
+        } else if task.terminationStatus == 1 {
+            // Exit code 1 means no matching processes were found
+            printStatus("Proton Pass is not running")
+            return true
+        } else {
+            printError("Failed to kill Proton Pass process")
+            return false
+        }
+    } catch {
+        printError("Error killing Proton Pass process: \(error)")
+        return false
+    }
+}
