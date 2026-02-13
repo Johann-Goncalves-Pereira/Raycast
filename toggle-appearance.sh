@@ -7,7 +7,7 @@
 #
 # Required Raycast parameters:
 # @raycast.schemaVersion 1
-# @raycast.title Toggle Appearance (Dark/Light)
+# @raycast.title Toggle Appearance
 # @raycast.mode silent
 #
 # Optional Raycast parameters:

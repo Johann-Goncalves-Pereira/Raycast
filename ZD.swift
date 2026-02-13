@@ -2,14 +2,14 @@
 
 // Required parameters:
 // @raycast.schemaVersion 1
-// @raycast.title Zen Decrypt
+// @raycast.title ZD
 // @raycast.mode silent
 
 // Optional parameters:
 // @raycast.icon ./icons/zen.svg
 
 // Documentation:
-// @raycast.description Zen Decrypt Profile
+// @raycast.description ZD
 // @raycast.author Johann-Goncalves-Pereira
 // @raycast.authorURL https://raycast.com/Johann-Goncalves-Pereira
 // @raycast.packageName Utilities
