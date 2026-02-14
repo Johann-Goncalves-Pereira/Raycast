@@ -6,7 +6,6 @@
 // @raycast.mode silent
 
 // Optional parameters:
-// @raycast.icon ./icons/zen.svg
 
 // Documentation:
 // @raycast.description ZD
