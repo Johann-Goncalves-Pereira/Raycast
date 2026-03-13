@@ -2,13 +2,13 @@
 
 // Required parameters:
 // @raycast.schemaVersion 1
-// @raycast.title ZD
+// @raycast.title პროფილი
 // @raycast.mode silent
 
 // Optional parameters:
 
 // Documentation:
-// @raycast.description ZD
+// @raycast.description პროფილი
 // @raycast.author Johann-Goncalves-Pereira
 // @raycast.authorURL https://raycast.com/Johann-Goncalves-Pereira
 // @raycast.packageName Utilities
