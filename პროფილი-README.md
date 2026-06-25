@@ -26,24 +26,24 @@ The script stays alive in the background while Zen is open on a **secure profile
 flowchart TB
     subgraph entry [Entry Point]
         Raycast[Raycast / CLI]
-        Run[runZenDecryptWorkflow]
+        Run[ProfileLauncher.run]
     end
 
     subgraph dmg [DMG Layer]
-        CheckMount[checkDMGMountStatus]
-        Mount[mountDMG]
-        Eject[ejectDMG]
+        CheckMount[DiskImage.mountStatus]
+        Mount[DiskImage.attach]
+        Eject[DiskImage.detach]
     end
 
     subgraph apps [Application Layer]
-        ProtonPass[openProtonPassIfAvailable]
-        Zen[openZenBrowser]
-        Monitor[ZenSessionMonitor]
+        ProtonPass[ProtonPassApp.openWhenZenIsNotRunning]
+        Zen[ZenBrowserLauncher.launch]
+        Monitor[SecureZenSessionMonitor]
     end
 
     subgraph profiles [Profile Paths]
-        Secure[handleSecureProfile]
-        Personal[handlePersonalProfile]
+        Secure[SecureVaultWorkflow.run]
+        Personal[PersonalProfileWorkflow.run]
     end
 
     Raycast --> Run
@@ -65,20 +65,20 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    Start([runZenDecryptWorkflow]) --> ValidateDMG{DMG file exists?}
+    Start([ProfileLauncher.run]) --> ValidateDMG{DMG file exists?}
     ValidateDMG -->|No| Exit1([exit 1])
     ValidateDMG -->|Yes| CheckMounted{DMG already mounted?}
 
-    CheckMounted -->|Yes| SecureSkipPass[handleSecureProfile<br/>shouldKillProtonPass: false]
-    CheckMounted -->|No| OpenPass[openProtonPassIfAvailable]
+    CheckMounted -->|Yes| SecureSkipPass[SecureVaultWorkflow<br/>terminateProtonPassAfterLaunch: false]
+    CheckMounted -->|No| OpenPass[ProtonPassApp.openWhenZenIsNotRunning]
 
-    OpenPass --> TryMount{mountDMG}
-    TryMount -->|Success| SecureKillPass[handleSecureProfile<br/>shouldKillProtonPass: true]
-    TryMount -->|Auth cancelled| Personal[handlePersonalProfile]
+    OpenPass --> TryMount{DiskImage.attach}
+    TryMount -->|Success| SecureKillPass[SecureVaultWorkflow<br/>terminateProtonPassAfterLaunch: true]
+    TryMount -->|Auth cancelled| Personal[PersonalProfileWorkflow]
     TryMount -->|Other failure| Exit2([exit 1])
 
-    SecureSkipPass --> Eject1[ejectDMG]
-    SecureKillPass --> Eject2[ejectDMG]
+    SecureSkipPass --> Eject1[DiskImage.detach]
+    SecureKillPass --> Eject2[DiskImage.detach]
     Personal --> Done([Success — no DMG to eject])
 
     Eject1 --> Success([printSuccess + exit 0])
@@ -89,56 +89,56 @@ flowchart TD
 
 ## Secure Profile Session Lifecycle
 
-Only the **secure profile** path activates `ZenSessionMonitor`. The personal profile opens Zen in fire-and-forget mode with no monitoring and no DMG eject.
+Only the **secure profile** path activates `SecureZenSessionMonitor`. The personal profile opens Zen in fire-and-forget mode with no monitoring and no DMG eject.
 
 ```mermaid
 sequenceDiagram
     participant Script
     participant Zen
-    participant Monitor as ZenSessionMonitor
+    participant Monitor as SecureZenSessionMonitor
     participant macOS
 
     Script->>Zen: open Zen.app --profile secure
-    Script->>Script: waitForZenToLaunch
-    Script->>Monitor: waitForZenExitOrSecurityEvent
-    Monitor->>Monitor: activateAppKitEventLoop
+    Script->>Script: waitUntilLaunched
+    Script->>Monitor: waitUntilSessionEnds
+    Monitor->>Monitor: AppKitEventLoop.activate
     Monitor->>Monitor: register observers
 
     loop Every 0.25s RunLoop.default
-        Monitor->>Monitor: poll isZenRunning
+        Monitor->>Monitor: poll ZenApp.isRunning
     end
 
     alt User quits Zen Cmd+Q
         macOS-->>Monitor: didTerminateApplicationNotification
-        Monitor-->>Script: normalExit
+        Monitor-->>Script: userQuitZen
     else Zen process gone polling fallback
-        Monitor-->>Script: normalExit
+        Monitor-->>Script: userQuitZen
     else Screen lock or sleep
         macOS-->>Monitor: screenIsLocked / willSleep
-        Monitor->>Zen: killZenBrowser forceTerminate
-        Monitor-->>Script: securityTriggered
+        Monitor->>Zen: ZenApp.forceTerminateAll
+        Monitor-->>Script: systemLockOrSleep
     end
 
-    Script->>Script: ejectDMG at mountPoint
+    Script->>Script: DiskImage.detach at mountPoint
     Script->>Script: workflow complete
 ```
 
 ---
 
-## ZenSessionMonitor — Event Sources
+## SecureZenSessionMonitor — Event Sources
 
 ```mermaid
 flowchart LR
     subgraph triggers [Triggers vault teardown]
         Quit[Zen quit<br/>didTerminateApplicationNotification]
-        Poll[isZenRunning false<br/>polling fallback]
+        Poll[ZenApp.isRunning false<br/>polling fallback]
         Lock[Screen lock<br/>CFNotificationCenter com.apple.screenIsLocked]
         Sleep[System sleep<br/>NSWorkspace.willSleepNotification]
     end
 
     subgraph actions [Actions]
-        NormalStop[stop normalExit]
-        SecurityStop[killZenBrowser then stop securityTriggered]
+        NormalStop[finish userQuitZen]
+        SecurityStop[ZenApp.forceTerminateAll then finish systemLockOrSleep]
     end
 
     Quit --> NormalStop
@@ -146,39 +146,39 @@ flowchart LR
     Lock --> SecurityStop
     Sleep --> SecurityStop
 
-    NormalStop --> Eject[ejectDMG in handleSecureProfile]
+    NormalStop --> Eject[DiskImage.detach in SecureVaultWorkflow]
     SecurityStop --> Eject
 ```
 
 | Event | API | On trigger |
 |---|---|---|
-| Zen quit | `NSWorkspace.didTerminateApplicationNotification` | Stop monitor (`normalExit`) |
-| Zen gone (fallback) | `isZenRunning()` poll every 0.25s | Stop monitor (`normalExit`) |
-| Screen lock | `CFNotificationCenter` → `com.apple.screenIsLocked` | Kill Zen → stop (`securityTriggered`) |
-| System sleep | `NSWorkspace.willSleepNotification` | Kill Zen → stop (`securityTriggered`) |
+| Zen quit | `NSWorkspace.didTerminateApplicationNotification` | Finish monitor (`userQuitZen`) |
+| Zen gone (fallback) | `ZenApp.isRunning` poll every 0.25s | Finish monitor (`userQuitZen`) |
+| Screen lock | `CFNotificationCenter` → `Zen.screenLockedNotification` | Force-terminate Zen → finish (`systemLockOrSleep`) |
+| System sleep | `NSWorkspace.willSleepNotification` | Force-terminate Zen → finish (`systemLockOrSleep`) |
 
-> **Note:** Security monitoring applies **only** when `waitForClose: true` (secure profile). Personal profile uses `waitForClose: false` and skips the monitor entirely.
+> **Note:** Security monitoring applies **only** when `ZenBrowserLauncher.Session.monitoredSecureVault` is used. Personal profile uses `.immediate` and skips the monitor entirely.
 
 ---
 
 ## Configuration
 
-All paths are defined in `PathConfiguration` inside [`პროფილი.swift`](პროფილი.swift):
+All paths are defined in `Paths` inside [`პროფილი.swift`](პროფილი.swift):
 
 | Constant | Path | Purpose |
 |---|---|---|
-| `dmgPath` | `~/Library/Application Support/zen/Profiles/Profile.dmg` | Encrypted vault image |
-| `protonPassPath` | `/Applications/Proton Pass.app` | Password manager (opened before mount) |
-| `zenAppPath` | `/Applications/Zen.app` | Zen Browser |
-| `secureProfilePath` | `/Volumes/Profile Secure/j3wki3fc.Secure` | Profile inside mounted DMG |
-| `personalProfilePath` | `~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal` | Fallback unencrypted profile |
+| `Paths.encryptedVault` | `~/Library/Application Support/zen/Profiles/Profile.dmg` | Encrypted vault image |
+| `Paths.protonPassApp` | `/Applications/Proton Pass.app` | Password manager (opened before mount) |
+| `Paths.zenApp` | `/Applications/Zen.app` | Zen Browser |
+| `Paths.secureProfile` | `/Volumes/Profile Secure/j3wki3fc.Secure` | Profile inside mounted DMG |
+| `Paths.personalProfile` | `~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal` | Fallback unencrypted profile |
 
-Zen identifiers in `Constants`:
+Zen identifiers in `Zen`:
 
 | Constant | Value |
 |---|---|
-| `zenBundleIdentifier` | `app.zen-browser.zen` |
-| `zenProcessName` | `Zen` |
+| `zenBundleIdentifier` | `Zen.bundleIdentifier` (`app.zen-browser.zen`) |
+| `zenProcessName` | `Zen.processName` (`Zen`) |
 
 ---
 
@@ -187,7 +187,7 @@ Zen identifiers in `Constants`:
 ### 1. DMG already mounted
 
 - Skips Proton Pass launch.
-- Skips killing Proton Pass (`shouldKillProtonPass: false`).
+- Skips killing Proton Pass (`terminateProtonPassAfterLaunch: false`).
 - Opens Zen with secure profile.
 - Monitors session until quit, lock, or sleep.
 - Ejects DMG when session ends.
@@ -205,7 +205,7 @@ Zen identifiers in `Constants`:
 
 - Detects auth errors in `hdiutil` output (`Authentication_Canceled`, `cancelled`, etc.).
 - Falls back to **personal profile** (no DMG, no monitoring, no eject).
-- Opens Zen with `waitForClose: false` and returns immediately.
+- Opens Zen with `ZenBrowserLauncher.Session.immediate` and returns immediately.
 
 ### 4. Mount failure (non-auth)
 
@@ -217,7 +217,7 @@ Zen identifiers in `Constants`:
 
 ### 6. Zen manual quit (secure session)
 
-- `ZenSessionMonitor` detects quit via notification or polling.
+- `SecureZenSessionMonitor` detects quit via notification or polling.
 - Prints `Zen Browser operation completed successfully.`
 - Prints `Zen session ended. Ejecting vault...`
 - Runs `hdiutil detach`.
@@ -232,12 +232,12 @@ Zen identifiers in `Constants`:
 
 ### 8. Zen already running at start
 
-- `openProtonPassIfAvailable` skips Proton Pass.
+- `ProtonPassApp.openWhenZenIsNotRunning` skips Proton Pass.
 - `open` may focus the existing Zen instance instead of spawning a new one.
 
 ### 9. Personal profile fallback
 
-- No `ZenSessionMonitor`.
+- No `SecureZenSessionMonitor`.
 - No DMG mount or eject.
 - Zen opens and script exits immediately.
 
@@ -247,7 +247,7 @@ Zen identifiers in `Constants`:
 
 ```mermaid
 flowchart TD
-    KillZen[killZenBrowser] --> FindApps[runningZenApplications by bundle ID]
+    KillZen[ZenApp.forceTerminateAll] --> FindApps[runningInstances by bundle ID]
     FindApps -->|None| DoneOK[Return true — not running]
     FindApps -->|Found| ForceTerm[forceTerminate on each]
     ForceTerm --> WaitLoop[Poll up to 5s]
@@ -263,9 +263,9 @@ flowchart TD
 
 | Prefix | Function | Meaning |
 |---|---|---|
-| 🔧 | `printStatus` | Informational step |
-| ✅ | `printSuccess` | Successful operation |
-| ❌ | `printError` | Error (may or may not abort) |
+| 🔧 | `Log.status` | Informational step |
+| ✅ | `Log.success` | Successful operation |
+| ❌ | `Log.error` | Error (may or may not abort) |
 
 Raycast `silent` mode surfaces this output in the Raycast log / terminal when run via CLI.
 
@@ -304,15 +304,18 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 ```
 პროფილი.swift
-├── PathConfiguration / Constants     — paths and Zen identifiers
-├── HDIUtil* models                    — hdiutil plist parsing
-├── DMG Management                    — mount, eject, status checks
-├── Zen lifecycle helpers             — isZenRunning, killZen, waitForZenToLaunch
-├── ZenSessionMonitor                 — sleep/lock/quit monitoring
-├── Application Management            — Proton Pass, openZenBrowser
-├── handleSecureProfile               — secure workflow + eject
-├── handlePersonalProfile             — fallback workflow
-└── runZenDecryptWorkflow             — entry orchestrator
+├── Paths / Zen / SystemPaths          — paths and identifiers
+├── Log / FileSystem                   — logging and filesystem helpers
+├── ProcessRunner                      — shell command execution
+├── DiskImagePlist models              — hdiutil plist parsing
+├── DiskImage                          — attach, detach, mount status
+├── AppKitEventLoop                    — CLI notification bootstrap
+├── ZenApp / ProtonPassApp             — process lifecycle
+├── SecureZenSessionMonitor            — sleep / lock / quit monitoring
+├── ZenBrowserLauncher                 — open Zen (monitored or immediate)
+├── SecureVaultWorkflow                — secure profile + eject
+├── PersonalProfileWorkflow            — fallback profile
+└── ProfileLauncher                    — entry orchestrator
 ```
 
 ---
@@ -325,12 +328,12 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 | Change in script | Sections to update |
 |---|---|
-| New/removed path in `PathConfiguration` | Configuration table |
-| New workflow branch in `runZenDecryptWorkflow` | Main Workflow Decision Tree diagram + Behavior Reference |
-| New monitor event or removed observer | ZenSessionMonitor diagram + Event Sources table |
+| New/removed path in `Paths` | Configuration table |
+| New workflow branch in `ProfileLauncher` | Main Workflow Decision Tree diagram + Behavior Reference |
+| New monitor event or removed observer | SecureZenSessionMonitor diagram + Event Sources table |
 | Changed kill/eject/mount logic | Process Kill Strategy + relevant behavior item |
 | New Raycast metadata comments | Overview table |
-| Changed `waitForClose` / profile logic | Secure Profile Session Lifecycle + Behavior Reference |
+| Changed `ZenBrowserLauncher.Session` / profile logic | Secure Profile Session Lifecycle + Behavior Reference |
 | New exit codes or error handling | Behavior Reference + Testing Checklist |
 | Renamed functions or restructured MARK sections | File Structure code map |
 
@@ -341,7 +344,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 3. Update the affected **diagrams** (mermaid blocks must use valid syntax: no spaces in node IDs, no HTML in labels).
 4. Update the **tables** and **behavior list** to match the new logic exactly.
 5. Add or remove **test scenarios** if behavior changed.
-6. Verify diagrams still reflect the real call order (especially `handleSecureProfile` → `openZenBrowser` → `ZenSessionMonitor` → `ejectDMG`).
+6. Verify diagrams still reflect the real call order (especially `SecureVaultWorkflow` → `ZenBrowserLauncher` → `SecureZenSessionMonitor` → `DiskImage.detach`).
 
 ### Diagram rules used here
 

@@ -16,49 +16,93 @@
 import AppKit
 import Foundation
 
-// MARK: - Configuration & Constants
-
-/// Path configurations for the application
-struct PathConfiguration {
-    static let dmgPath = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
-    static let protonPassPath = "/Applications/Proton Pass.app"
-    static let zenAppPath = "/Applications/Zen.app"
-    static let secureProfilePath = "/Volumes/Profile Secure/j3wki3fc.Secure"
-    static let personalProfilePath = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
+enum Paths {
+    static let encryptedVault = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
+    static let protonPassApp = "/Applications/Proton Pass.app"
+    static let zenApp = "/Applications/Zen.app"
+    static let secureProfile = "/Volumes/Profile Secure/j3wki3fc.Secure"
+    static let personalProfile = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
 }
 
-/// Application constants
-struct Constants {
-    static let fileManager = FileManager.default
-    static let volumesPrefix = "/Volumes/"
-    static let zenBundleIdentifier = "app.zen-browser.zen"
-    static let zenProcessName = "Zen"
+enum Zen {
+    static let bundleIdentifier = "app.zen-browser.zen"
+    static let processName = "Zen"
+    static let screenLockedNotification = "com.apple.screenIsLocked"
 }
 
-// MARK: - Data Models
-
-/// Represents the output from hdiutil info command
-struct HDIUtilInfo: Codable {
-    let images: [HDIUtilImage]
+enum SystemPaths {
+    static let hdiutil = "/usr/bin/hdiutil"
+    static let open = "/usr/bin/open"
+    static let pkill = "/usr/bin/pkill"
+    static let volumesRoot = "/Volumes/"
 }
 
-/// Represents a disk image in hdiutil info output
-struct HDIUtilImage: Codable {
+enum Log {
+    static func status(_ message: String) { print("🔧 \(message)") }
+    static func error(_ message: String) { print("❌ \(message)") }
+    static func success(_ message: String) { print("✅ \(message)") }
+}
+
+enum FileSystem {
+    private static let manager = FileManager.default
+
+    static func exists(at path: String) -> Bool {
+        manager.fileExists(atPath: path)
+    }
+
+    static func expandingTilde(in path: String) -> String {
+        NSString(string: path).expandingTildeInPath
+    }
+}
+
+struct ProcessRunner {
+    static func captureData(executable: String, arguments: [String]) throws -> (exitCode: Int32, data: Data) {
+        let task = Process()
+        task.launchPath = executable
+        task.arguments = arguments
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+
+        try task.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+
+        return (task.terminationStatus, data)
+    }
+
+    static func capture(executable: String, arguments: [String]) throws -> (exitCode: Int32, output: String) {
+        let (exitCode, data) = try captureData(executable: executable, arguments: arguments)
+        let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (exitCode, output)
+    }
+
+    static func run(executable: String, arguments: [String]) throws {
+        _ = try capture(executable: executable, arguments: arguments)
+    }
+}
+
+struct DiskImagePlist: Codable {
+    let images: [MountedDiskImage]
+}
+
+struct MountedDiskImage: Codable {
     let imagePath: String
-    let systemEntities: [HDIUtilSystemEntity]?
-    
+    let systemEntities: [DiskImageEntity]?
+
     enum CodingKeys: String, CodingKey {
         case imagePath = "image-path"
         case systemEntities = "system-entities"
     }
 }
 
-/// Represents a system entity within a disk image
-struct HDIUtilSystemEntity: Codable {
+struct DiskImageEntity: Codable {
     let contentHint: String?
     let mountPoint: String?
     let volumeKind: String?
-    
+
     enum CodingKeys: String, CodingKey {
         case contentHint = "content-hint"
         case mountPoint = "mount-point"
@@ -66,377 +110,300 @@ struct HDIUtilSystemEntity: Codable {
     }
 }
 
-// MARK: - Utility Functions
+enum DiskImage {
+    static func volumeName(from dmgPath: String) -> String {
+        URL(fileURLWithPath: dmgPath).deletingPathExtension().lastPathComponent
+    }
 
-/// Validates if a file exists at the given path
-/// - Parameter path: The file path to check
-/// - Returns: True if file exists, false otherwise
-func fileExists(at path: String) -> Bool {
-    return Constants.fileManager.fileExists(atPath: path)
-}
+    static func mountPoint(for imagePath: String) -> String? {
+        do {
+            let (exitCode, data) = try ProcessRunner.captureData(
+                executable: SystemPaths.hdiutil,
+                arguments: ["info", "-plist"]
+            )
 
-/// Gets the volume name from a DMG file path
-/// - Parameter dmgPath: Path to the DMG file
-/// - Returns: The expected volume name
-func getVolumeNameFromDMG(_ dmgPath: String) -> String {
-    let dmgURL = URL(fileURLWithPath: dmgPath)
-    return dmgURL.deletingPathExtension().lastPathComponent
-}
+            guard exitCode == 0,
+                  let inventory = try? PropertyListDecoder().decode(DiskImagePlist.self, from: data)
+            else { return nil }
 
-/// Expands tilde in file paths to full home directory path
-/// - Parameter path: Path potentially containing tilde
-/// - Returns: Expanded path
-func expandTildePath(_ path: String) -> String {
-    return NSString(string: path).expandingTildeInPath
-}
-
-/// Prints a formatted status message
-/// - Parameter message: The message to print
-func printStatus(_ message: String) {
-    print("🔧 \(message)")
-}
-
-/// Prints a formatted error message
-/// - Parameter message: The error message to print
-func printError(_ message: String) {
-    print("❌ \(message)")
-}
-
-/// Prints a formatted success message
-/// - Parameter message: The success message to print
-func printSuccess(_ message: String) {
-    print("✅ \(message)")
-}
-
-// MARK: - DMG Management Functions
-
-/// Gets the current mount point for a DMG file if it's already mounted
-/// - Parameter imagePath: Path to the DMG file
-/// - Returns: Mount point path if mounted, nil otherwise
-func getMountPointForDMG(imagePath: String) -> String? {
-    let task = Process()
-    task.launchPath = "/usr/bin/hdiutil"
-    task.arguments = ["info", "-plist"]
-    let pipe = Pipe()
-    task.standardOutput = pipe
-
-    do {
-        try task.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-
-        if task.terminationStatus == 0 {
-            let plistDecoder = PropertyListDecoder()
-            if let plist = try? plistDecoder.decode(HDIUtilInfo.self, from: data) {
-                // Search through all mounted images
-                for image in plist.images {
-                    if image.imagePath == imagePath {
-                        if let systemEntities = image.systemEntities {
-                            for entity in systemEntities {
-                                if let mountPoint = entity.mountPoint {
-                                    return mountPoint
-                                }
-                            }
-                        }
+            for image in inventory.images where image.imagePath == imagePath {
+                for entity in image.systemEntities ?? [] {
+                    if let mountPoint = entity.mountPoint {
+                        return mountPoint
                     }
                 }
             }
-        }
-    } catch {
-        printError("Error getting hdiutil info: \(error)")
-    }
-    return nil
-}
-
-/// Checks if DMG is currently mounted and returns mount status
-/// - Parameter dmgPath: Path to the DMG file
-/// - Returns: Tuple containing mount status and mount point if available
-func checkDMGMountStatus(_ dmgPath: String) -> (isMounted: Bool, mountPoint: String?) {
-    let mountPoint = getMountPointForDMG(imagePath: dmgPath)
-    return (mountPoint != nil, mountPoint)
-}
-
-/// Mounts a DMG file and returns the mount point
-/// - Parameter dmgPath: Path to the DMG file to mount
-/// - Returns: Mount point if successful, nil if failed
-func mountDMG(_ dmgPath: String) -> String? {
-    printStatus("Attempting to mount \(dmgPath)...")
-    print("IMPORTANT: If the DMG is encrypted, macOS will now ask for the password.")
-    print("This script cannot enter the password for you.")
-
-    let task = Process()
-    let pipe = Pipe()
-    
-    task.launchPath = "/usr/bin/hdiutil"
-    task.arguments = ["attach", dmgPath, "-nobrowse"]
-    task.standardOutput = pipe
-    task.standardError = pipe
-
-    do {
-        try task.run()
-        
-        let outputData = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-
-        let output = String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        printStatus("hdiutil attach command finished.")
-        printStatus("Termination Status: \(task.terminationStatus)")
-        
-        if !output.isEmpty { 
-            print("Output:\n\(output)") 
+        } catch {
+            Log.error("Error getting hdiutil info: \(error)")
         }
 
-        if task.terminationStatus == 0 {
-            // Try to get the mount point using hdiutil info
-            if let mountPoint = getMountPointForDMG(imagePath: dmgPath) {
-                printSuccess("DMG mounted successfully at \(mountPoint)")
-                return mountPoint
-            } else {
-                // Fallback: parse hdiutil output
-                return parseMountPointFromOutput(output)
-            }
-        } else {
-            return handleMountFailure(output: output, terminationStatus: task.terminationStatus)
-        }
-    } catch {
-        printError("Failed to execute hdiutil: \(error)")
         return nil
     }
-}
 
-/// Parses mount point from hdiutil attach output
-/// - Parameter output: The output string from hdiutil
-/// - Returns: Mount point if found, nil otherwise
-func parseMountPointFromOutput(_ output: String) -> String? {
-    let lines = output.components(separatedBy: .newlines)
-    for line in lines {
-        let parts = line.split(separator: "\t")
-        if parts.count >= 3 && parts.last!.hasPrefix(Constants.volumesPrefix) {
-            let mountPoint = String(parts.last!)
-            printSuccess("DMG mounted successfully. Determined mount point: \(mountPoint)")
-            return mountPoint
+    static func mountStatus(for dmgPath: String) -> (isMounted: Bool, mountPoint: String?) {
+        let mountPoint = mountPoint(for: dmgPath)
+        return (mountPoint != nil, mountPoint)
+    }
+
+    static func attach(_ dmgPath: String) -> String? {
+        Log.status("Attempting to mount \(dmgPath)...")
+        print("IMPORTANT: If the DMG is encrypted, macOS will now ask for the password.")
+        print("This script cannot enter the password for you.")
+
+        do {
+            let (exitCode, output) = try ProcessRunner.capture(
+                executable: SystemPaths.hdiutil,
+                arguments: ["attach", dmgPath, "-nobrowse"]
+            )
+
+            Log.status("hdiutil attach command finished.")
+            Log.status("Termination Status: \(exitCode)")
+
+            if !output.isEmpty {
+                print("Output:\n\(output)")
+            }
+
+            guard exitCode == 0 else {
+                return resolveMountFailure(output: output, exitCode: exitCode)
+            }
+
+            if let mountPoint = mountPoint(for: dmgPath) {
+                Log.success("DMG mounted successfully at \(mountPoint)")
+                return mountPoint
+            }
+
+            return parseMountPointFromAttachOutput(output)
+        } catch {
+            Log.error("Failed to execute hdiutil: \(error)")
+            return nil
         }
     }
-    
-    printError("DMG attach seemed to succeed but could not determine mount point.")
-    print("Please check if a password prompt appeared and was handled correctly.")
-    return nil
-}
 
-/// Handles mount failure scenarios
-/// - Parameters:
-///   - output: Output from hdiutil command
-///   - terminationStatus: Exit status of hdiutil
-/// - Returns: nil (mount failed)
-func handleMountFailure(output: String, terminationStatus: Int32) -> String? {
-    printError("Error mounting DMG. hdiutil exited with status \(terminationStatus).")
-    
-    let authErrors = ["Authentication_Canceled", "authentication error", "cancelled", 
-                     "attach canceled", "hdiutil: attach canceled"]
-    
-    if authErrors.contains(where: output.contains) {
-        printError("Mounting failed due to password prompt cancellation or incorrect password.")
-        printStatus("Will proceed with personal profile instead.")
-        return nil // Signal to use personal profile
-    } else {
-        printError("DMG mounting failed for other reasons.")
+    static func detach(at mountPoint: String) -> Bool {
+        Log.status("Attempting to eject DMG at \(mountPoint)...")
+
+        do {
+            let (exitCode, output) = try ProcessRunner.capture(
+                executable: SystemPaths.hdiutil,
+                arguments: ["detach", mountPoint]
+            )
+
+            if exitCode == 0 {
+                Log.success("Successfully ejected \(mountPoint). Output: \(output)")
+                return true
+            }
+
+            Log.error("Error ejecting DMG \(mountPoint). Status: \(exitCode). Output: \(output)")
+            return false
+        } catch {
+            Log.error("Failed to run eject command for \(mountPoint): \(error)")
+            return false
+        }
+    }
+
+    private static func parseMountPointFromAttachOutput(_ output: String) -> String? {
+        for line in output.components(separatedBy: .newlines) {
+            let parts = line.split(separator: "\t")
+            guard parts.count >= 3,
+                  parts.last!.hasPrefix(SystemPaths.volumesRoot)
+            else { continue }
+
+            let mountPoint = String(parts.last!)
+            Log.success("DMG mounted successfully. Determined mount point: \(mountPoint)")
+            return mountPoint
+        }
+
+        Log.error("DMG attach seemed to succeed but could not determine mount point.")
+        print("Please check if a password prompt appeared and was handled correctly.")
+        return nil
+    }
+
+    private static func resolveMountFailure(output: String, exitCode: Int32) -> String? {
+        Log.error("Error mounting DMG. hdiutil exited with status \(exitCode).")
+
+        let passwordPromptFailures = [
+            "Authentication_Canceled",
+            "authentication error",
+            "cancelled",
+            "attach canceled",
+            "hdiutil: attach canceled"
+        ]
+
+        if passwordPromptFailures.contains(where: output.contains) {
+            Log.error("Mounting failed due to password prompt cancellation or incorrect password.")
+            Log.status("Will proceed with personal profile instead.")
+            return nil
+        }
+
+        Log.error("DMG mounting failed for other reasons.")
         exit(1)
     }
 }
 
-/// Safely ejects a mounted DMG
-/// - Parameter mountPoint: The mount point to eject
-/// - Returns: True if successful, false otherwise
-func ejectDMG(at mountPoint: String) -> Bool {
-    printStatus("Attempting to eject DMG at \(mountPoint)...")
-    
-    let task = Process()
-    task.launchPath = "/usr/bin/hdiutil"
-    task.arguments = ["detach", mountPoint]
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    task.standardError = pipe
+enum AppKitEventLoop {
+    static func activate() {
+        NSApplication.shared.setActivationPolicy(.accessory)
+    }
+}
 
-    do {
-        try task.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
+enum ZenApp {
+    static var runningInstances: [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == Zen.bundleIdentifier && !$0.isTerminated
+        }
+    }
 
-        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    static var isRunning: Bool {
+        !runningInstances.isEmpty
+    }
 
-        if task.terminationStatus == 0 {
-            printSuccess("Successfully ejected \(mountPoint). Output: \(output)")
+    static func waitUntilLaunched(timeout: TimeInterval = 15) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if isRunning { return true }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        }
+
+        return isRunning
+    }
+
+    static func forceTerminateAll() -> Bool {
+        let instances = runningInstances
+
+        if instances.isEmpty {
+            Log.status("Zen Browser is not running")
             return true
-        } else {
-            printError("Error ejecting DMG \(mountPoint). Status: \(task.terminationStatus). Output: \(output)")
+        }
+
+        instances.forEach { $0.forceTerminate() }
+
+        for _ in 0..<25 {
+            if !isRunning {
+                Log.success("Zen Browser process killed successfully")
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+
+        do {
+            _ = try ProcessRunner.capture(
+                executable: SystemPaths.pkill,
+                arguments: ["-x", Zen.processName]
+            )
+
+            if !isRunning {
+                Log.success("Zen Browser process killed successfully")
+                return true
+            }
+
+            Log.error("Failed to kill Zen Browser process")
+            return false
+        } catch {
+            Log.error("Error killing Zen Browser process: \(error)")
             return false
         }
-    } catch {
-        printError("Failed to run eject command for \(mountPoint): \(error)")
-        return false
     }
 }
 
-/// Initializes AppKit so NSWorkspace and DistributedNotificationCenter deliver events in CLI scripts
-func activateAppKitEventLoop() {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
-}
-
-/// Returns running Zen Browser application instances
-func runningZenApplications() -> [NSRunningApplication] {
-    NSWorkspace.shared.runningApplications.filter {
-        $0.bundleIdentifier == Constants.zenBundleIdentifier && !$0.isTerminated
-    }
-}
-
-/// Checks if Zen application is already running
-/// - Returns: True if Zen is running, false otherwise
-func isZenRunning() -> Bool {
-    return !runningZenApplications().isEmpty
-}
-
-/// Waits for Zen Browser to launch after `open`
-/// - Parameter timeout: Maximum seconds to wait
-/// - Returns: True if Zen is running before the timeout expires
-func waitForZenToLaunch(timeout: TimeInterval = 15) -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if isZenRunning() {
+enum ProtonPassApp {
+    static func openWhenZenIsNotRunning() -> Bool {
+        if ZenApp.isRunning {
+            Log.status("Zen is already running, skipping Proton Pass launch")
             return true
         }
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-    }
-    return isZenRunning()
-}
 
-/// Kills the Proton Pass process if it's running
-/// - Returns: True if process was killed or not running, false if there was an error
-func killProtonPass() -> Bool {
-    let task = Process()
-    task.launchPath = "/usr/bin/pkill"
-    task.arguments = ["-f", "Proton Pass"]
-    
-    do {
-        try task.run()
-        task.waitUntilExit()
-        
-        if task.terminationStatus == 0 {
-            printSuccess("Proton Pass process killed successfully")
+        guard FileSystem.exists(at: Paths.protonPassApp) else {
+            Log.error("Proton Pass not found at '\(Paths.protonPassApp)'")
             return true
-        } else if task.terminationStatus == 1 {
-            // Exit code 1 means no matching processes were found
-            printStatus("Proton Pass is not running")
+        }
+
+        Log.status("Opening Proton Pass...")
+
+        do {
+            try ProcessRunner.run(executable: SystemPaths.open, arguments: [Paths.protonPassApp])
+            Log.success("Proton Pass opened successfully")
             return true
-        } else {
-            printError("Failed to kill Proton Pass process")
+        } catch {
+            Log.error("Failed to open Proton Pass: \(error)")
+            return true
+        }
+    }
+
+    static func terminate() -> Bool {
+        do {
+            let (exitCode, _) = try ProcessRunner.capture(
+                executable: SystemPaths.pkill,
+                arguments: ["-f", "Proton Pass"]
+            )
+
+            switch exitCode {
+            case 0:
+                Log.success("Proton Pass process killed successfully")
+                return true
+            case 1:
+                Log.status("Proton Pass is not running")
+                return true
+            default:
+                Log.error("Failed to kill Proton Pass process")
+                return false
+            }
+        } catch {
+            Log.error("Error killing Proton Pass process: \(error)")
             return false
         }
-    } catch {
-        printError("Error killing Proton Pass process: \(error)")
-        return false
     }
 }
 
-/// Kills the Zen Browser process if it's running
-/// - Returns: True if process was killed or not running, false if there was an error
-func killZenBrowser() -> Bool {
-    let zenApps = runningZenApplications()
-    
-    if zenApps.isEmpty {
-        printStatus("Zen Browser is not running")
-        return true
-    }
-    
-    for app in zenApps {
-        app.forceTerminate()
-    }
-    
-    for _ in 0..<25 {
-        if !isZenRunning() {
-            printSuccess("Zen Browser process killed successfully")
-            return true
-        }
-        Thread.sleep(forTimeInterval: 0.2)
-    }
-    
-    let task = Process()
-    task.launchPath = "/usr/bin/pkill"
-    task.arguments = ["-x", Constants.zenProcessName]
-    
-    do {
-        try task.run()
-        task.waitUntilExit()
-        
-        if !isZenRunning() {
-            printSuccess("Zen Browser process killed successfully")
-            return true
-        }
-        
-        printError("Failed to kill Zen Browser process")
-        return false
-    } catch {
-        printError("Error killing Zen Browser process: \(error)")
-        return false
-    }
+enum SecureSessionEnd {
+    case userQuitZen
+    case systemLockOrSleep
 }
 
-// MARK: - Zen Session Monitor
-
-/// Result of waiting for Zen Browser to exit or a security event
-enum ZenWaitResult {
-    case normalExit
-    case securityTriggered
-}
-
-/// Monitors Zen Browser session for quit, sleep, and screen-lock events
-final class ZenSessionMonitor {
+final class SecureZenSessionMonitor {
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var cfObserverToken: UnsafeMutableRawPointer?
-    private var didStop = false
-    private var result: ZenWaitResult = .normalExit
-    
-    /// Waits until Zen exits normally or a system security event triggers teardown
-    /// - Returns: Whether Zen quit normally or a security event forced shutdown
-    func waitForZenExitOrSecurityEvent() -> ZenWaitResult {
-        activateAppKitEventLoop()
-        cfObserverToken = Unmanaged.passUnretained(self).toOpaque()
+    private var screenLockObserverToken: UnsafeMutableRawPointer?
+    private var hasFinished = false
+    private var endReason: SecureSessionEnd = .userQuitZen
+
+    func waitUntilSessionEnds() -> SecureSessionEnd {
+        AppKitEventLoop.activate()
+        screenLockObserverToken = Unmanaged.passUnretained(self).toOpaque()
         registerObservers()
-        
-        while !didStop {
+
+        while !hasFinished {
             RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))
-            
-            if !didStop && !isZenRunning() {
-                stop(with: .normalExit)
+
+            if !hasFinished && !ZenApp.isRunning {
+                finish(with: .userQuitZen)
             }
         }
-        
-        cleanup()
-        return result
+
+        unregisterObservers()
+        return endReason
     }
-    
-    private func stop(with result: ZenWaitResult) {
-        guard !didStop else { return }
-        didStop = true
-        self.result = result
+
+    private func finish(with reason: SecureSessionEnd) {
+        guard !hasFinished else { return }
+        hasFinished = true
+        endReason = reason
     }
-    
-    private func handleSecurityEvent() {
-        guard !didStop else { return }
-        printStatus("System sleep/lock detected — securing vault...")
-        _ = killZenBrowser()
-        stop(with: .securityTriggered)
+
+    private func secureVaultOnSystemEvent() {
+        guard !hasFinished else { return }
+        Log.status("System sleep/lock detected — securing vault...")
+        _ = ZenApp.forceTerminateAll()
+        finish(with: .systemLockOrSleep)
     }
-    
-    private static let screenLockCallback: CFNotificationCallback = { _, observer, _, _, _ in
-        guard let observer = observer else { return }
-        let monitor = Unmanaged<ZenSessionMonitor>.fromOpaque(observer).takeUnretainedValue()
+
+    private static let onScreenLocked: CFNotificationCallback = { _, observer, _, _, _ in
+        guard let observer else { return }
+        let monitor = Unmanaged<SecureZenSessionMonitor>.fromOpaque(observer).takeUnretainedValue()
         DispatchQueue.main.async {
-            monitor.handleSecurityEvent()
+            monitor.secureVaultOnSystemEvent()
         }
     }
-    
+
     private func registerObservers() {
         workspaceObservers.append(
             NSWorkspace.shared.notificationCenter.addObserver(
@@ -444,256 +411,234 @@ final class ZenSessionMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.handleSecurityEvent()
+                self?.secureVaultOnSystemEvent()
             }
         )
-        
+
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDistributedCenter(),
-            cfObserverToken,
-            Self.screenLockCallback,
-            "com.apple.screenIsLocked" as CFString,
+            screenLockObserverToken,
+            Self.onScreenLocked,
+            Zen.screenLockedNotification as CFString,
             nil,
             .deliverImmediately
         )
-        
+
         workspaceObservers.append(
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didTerminateApplicationNotification,
                 object: nil,
                 queue: .main
             ) { [weak self] notification in
-                guard let self = self, !self.didStop else { return }
-                if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                   app.bundleIdentifier == Constants.zenBundleIdentifier {
-                    self.stop(with: .normalExit)
-                }
+                guard let self, !self.hasFinished else { return }
+                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      app.bundleIdentifier == Zen.bundleIdentifier
+                else { return }
+
+                self.finish(with: .userQuitZen)
             }
         )
     }
-    
-    private func cleanup() {
-        if let token = cfObserverToken {
+
+    private func unregisterObservers() {
+        if let token = screenLockObserverToken {
             CFNotificationCenterRemoveObserver(
                 CFNotificationCenterGetDistributedCenter(),
                 token,
-                CFNotificationName("com.apple.screenIsLocked" as CFString),
+                CFNotificationName(Zen.screenLockedNotification as CFString),
                 nil
             )
-            cfObserverToken = nil
+            screenLockObserverToken = nil
         }
-        for observer in workspaceObservers {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+
+        workspaceObservers.forEach {
+            NSWorkspace.shared.notificationCenter.removeObserver($0)
         }
         workspaceObservers.removeAll()
     }
-    
+
     deinit {
-        cleanup()
+        unregisterObservers()
     }
 }
 
-// MARK: - Application Management Functions
-
-/// Opens Proton Pass application if available and Zen is not running
-/// - Returns: True if opened successfully or if not critical, false if critical failure
-func openProtonPassIfAvailable() -> Bool {
-    // First check if Zen is already running
-    if isZenRunning() {
-        printStatus("Zen is already running, skipping Proton Pass launch")
-        return true
+enum ZenBrowserLauncher {
+    enum Session {
+        case monitoredSecureVault
+        case immediate
     }
 
-    guard fileExists(at: PathConfiguration.protonPassPath) else {
-        printError("Proton Pass not found at '\(PathConfiguration.protonPassPath)'")
-        return true // Not critical, continue
-    }
-    
-    printStatus("Opening Proton Pass...")
-    let task = Process()
-    task.launchPath = "/usr/bin/open"
-    task.arguments = [PathConfiguration.protonPassPath]
-
-    do {
-        try task.run()
-        printSuccess("Proton Pass opened successfully")
-        return true
-    } catch {
-        printError("Failed to open Proton Pass: \(error)")
-        return true // Continue even if Proton Pass fails
-    }
-}
-
-/// Opens Zen Browser with specified profile and waits for it to close
-/// - Parameters:
-///   - profilePath: Path to the browser profile
-///   - waitForClose: Whether to wait for the browser to close
-///   - shouldKillProtonPass: Whether to kill Proton Pass after opening Zen
-/// - Returns: True if successful, false otherwise
-func openZenBrowser(with profilePath: String?, waitForClose: Bool = true, shouldKillProtonPass: Bool = true) -> Bool {
-    guard fileExists(at: PathConfiguration.zenAppPath) else {
-        printError("Zen Browser application not found at '\(PathConfiguration.zenAppPath)'.")
-        printError("Please ensure Zen Browser is installed at the correct location.")
-        return false
-    }
-    
-    let task = Process()
-    task.launchPath = "/usr/bin/open"
-    
-    var arguments = [PathConfiguration.zenAppPath]
-    
-    if let profilePath = profilePath, fileExists(at: profilePath) {
-        arguments.append(contentsOf: ["--args", "--profile", profilePath])
-        printStatus("Opening Zen Browser with profile: \(profilePath)")
-    } else {
-        printStatus("Opening Zen Browser with default profile...")
-    }
-    
-    task.arguments = arguments
-
-    do {
-        if waitForClose {
-            printStatus("Zen Browser will open. The script will wait for it to be closed before continuing.")
-            printStatus("Monitoring for system sleep and screen lock events.")
-        }
-        
-        try task.run()
-        task.waitUntilExit()
-        
-        // Kill Proton Pass right after Zen is opened, but only if shouldKillProtonPass is true
-        if shouldKillProtonPass {
-            if !killProtonPass() {
-                printError("Failed to kill Proton Pass process")
-            }
-        } else {
-            printStatus("Skipping Proton Pass termination as requested")
-        }
-        
-        if waitForClose {
-            guard waitForZenToLaunch() else {
-                printError("Zen Browser did not start within the expected time.")
-                return false
-            }
-            
-            let monitor = ZenSessionMonitor()
-            let waitResult = monitor.waitForZenExitOrSecurityEvent()
-            
-            switch waitResult {
-            case .normalExit:
-                printSuccess("Zen Browser operation completed successfully.")
-            case .securityTriggered:
-                printSuccess("Vault secured due to system sleep or lock.")
-            }
-            return true
-        }
-        
-        if task.terminationStatus == 0 {
-            printSuccess("Zen Browser operation completed successfully.")
-            return true
-        } else {
-            printError("Zen Browser exited with status \(task.terminationStatus).")
+    static func launch(
+        profilePath: String?,
+        session: Session,
+        terminateProtonPassAfterLaunch: Bool
+    ) -> Bool {
+        guard FileSystem.exists(at: Paths.zenApp) else {
+            Log.error("Zen Browser application not found at '\(Paths.zenApp)'.")
+            Log.error("Please ensure Zen Browser is installed at the correct location.")
             return false
         }
-    } catch {
-        printError("Failed to open Zen Browser: \(error)")
-        return false
+
+        var arguments = [Paths.zenApp]
+
+        if let profilePath, FileSystem.exists(at: profilePath) {
+            arguments.append(contentsOf: ["--args", "--profile", profilePath])
+            Log.status("Opening Zen Browser with profile: \(profilePath)")
+        } else {
+            Log.status("Opening Zen Browser with default profile...")
+        }
+
+        if case .monitoredSecureVault = session {
+            Log.status("Zen Browser will open. The script will wait for it to be closed before continuing.")
+            Log.status("Monitoring for system sleep and screen lock events.")
+        }
+
+        do {
+            let (exitCode, _) = try ProcessRunner.capture(
+                executable: SystemPaths.open,
+                arguments: arguments
+            )
+
+            if terminateProtonPassAfterLaunch {
+                if !ProtonPassApp.terminate() {
+                    Log.error("Failed to kill Proton Pass process")
+                }
+            } else {
+                Log.status("Skipping Proton Pass termination as requested")
+            }
+
+            switch session {
+            case .monitoredSecureVault:
+                guard ZenApp.waitUntilLaunched() else {
+                    Log.error("Zen Browser did not start within the expected time.")
+                    return false
+                }
+
+                let endReason = SecureZenSessionMonitor().waitUntilSessionEnds()
+
+                switch endReason {
+                case .userQuitZen:
+                    Log.success("Zen Browser operation completed successfully.")
+                case .systemLockOrSleep:
+                    Log.success("Vault secured due to system sleep or lock.")
+                }
+
+                return true
+
+            case .immediate:
+                if exitCode == 0 {
+                    Log.success("Zen Browser operation completed successfully.")
+                    return true
+                }
+
+                Log.error("Zen Browser exited with status \(exitCode).")
+                return false
+            }
+        } catch {
+            Log.error("Failed to open Zen Browser: \(error)")
+            return false
+        }
     }
 }
 
-// MARK: - Main Logic Functions
+enum SecureVaultWorkflow {
+    static func run(at mountPoint: String, terminateProtonPassAfterLaunch: Bool) -> Bool {
+        Log.success("Profile successfully decrypted. Opening Zen Browser with secure profile...")
 
-/// Handles the secure profile workflow when DMG is mounted
-/// - Parameters:
-///   - mountPoint: The mount point of the DMG
-///   - shouldKillProtonPass: Whether to kill Proton Pass after opening Zen
-/// - Returns: True if successful, false otherwise
-func handleSecureProfile(mountPoint: String, shouldKillProtonPass: Bool = true) -> Bool {
-    printSuccess("Profile successfully decrypted. Opening Zen Browser with secure profile...")
-    
-    let zenOpened: Bool
-    if fileExists(at: PathConfiguration.secureProfilePath) {
-        printStatus("Secure profile found at: \(PathConfiguration.secureProfilePath)")
-        zenOpened = openZenBrowser(with: PathConfiguration.secureProfilePath, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
-    } else {
-        printError("Secure profile not found at '\(PathConfiguration.secureProfilePath)'")
-        printStatus("Opening Zen Browser without specific profile...")
-        zenOpened = openZenBrowser(with: nil, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
-    }
-    
-    printStatus("Zen session ended. Ejecting vault...")
-    if !ejectDMG(at: mountPoint) {
-        printError("Failed to eject DMG properly")
-    }
-    
-    return zenOpened
-}
+        let zenLaunched: Bool
 
-/// Handles the personal profile workflow when DMG is not available
-/// - Returns: True if successful, false otherwise
-func handlePersonalProfile() -> Bool {
-    printStatus("DMG was not mounted or password was incorrect. Opening Zen Browser with personal profile...")
-    
-    let expandedPersonalProfilePath = expandTildePath(PathConfiguration.personalProfilePath)
-    printStatus("Using personal profile at: \(expandedPersonalProfilePath)")
-    
-    if fileExists(at: expandedPersonalProfilePath) {
-        printStatus("Opening Zen Browser with personal profile...")
-        return openZenBrowser(with: expandedPersonalProfilePath, waitForClose: false)
-    } else {
-        printStatus("Personal profile not found. Opening Zen Browser with default profile...")
-        return openZenBrowser(with: nil, waitForClose: false)
+        if FileSystem.exists(at: Paths.secureProfile) {
+            Log.status("Secure profile found at: \(Paths.secureProfile)")
+            zenLaunched = ZenBrowserLauncher.launch(
+                profilePath: Paths.secureProfile,
+                session: .monitoredSecureVault,
+                terminateProtonPassAfterLaunch: terminateProtonPassAfterLaunch
+            )
+        } else {
+            Log.error("Secure profile not found at '\(Paths.secureProfile)'")
+            Log.status("Opening Zen Browser without specific profile...")
+            zenLaunched = ZenBrowserLauncher.launch(
+                profilePath: nil,
+                session: .monitoredSecureVault,
+                terminateProtonPassAfterLaunch: terminateProtonPassAfterLaunch
+            )
+        }
+
+        Log.status("Zen session ended. Ejecting vault...")
+
+        if !DiskImage.detach(at: mountPoint) {
+            Log.error("Failed to eject DMG properly")
+        }
+
+        return zenLaunched
     }
 }
 
-/// Main application workflow orchestrator
-func runZenDecryptWorkflow() {
-    printStatus("Starting DMG Open Script")
-    printStatus("DMG Path: \(PathConfiguration.dmgPath)")
-    
-    // Step 1: Validate DMG file exists
-    guard fileExists(at: PathConfiguration.dmgPath) else {
-        printError("DMG file not found at \(PathConfiguration.dmgPath)")
-        exit(1)
+enum PersonalProfileWorkflow {
+    static func run() -> Bool {
+        Log.status("DMG was not mounted or password was incorrect. Opening Zen Browser with personal profile...")
+
+        let personalProfilePath = FileSystem.expandingTilde(in: Paths.personalProfile)
+        Log.status("Using personal profile at: \(personalProfilePath)")
+
+        if FileSystem.exists(at: personalProfilePath) {
+            Log.status("Opening Zen Browser with personal profile...")
+            return ZenBrowserLauncher.launch(
+                profilePath: personalProfilePath,
+                session: .immediate,
+                terminateProtonPassAfterLaunch: false
+            )
+        }
+
+        Log.status("Personal profile not found. Opening Zen Browser with default profile...")
+        return ZenBrowserLauncher.launch(
+            profilePath: nil,
+            session: .immediate,
+            terminateProtonPassAfterLaunch: false
+        )
     }
-    
-    let volumeName = getVolumeNameFromDMG(PathConfiguration.dmgPath)
-    printStatus("Expected Volume Name: \(volumeName)")
-    
-    // Step 2: Check if DMG is already mounted
-    let (isMounted, currentMountPoint) = checkDMGMountStatus(PathConfiguration.dmgPath)
-    
-    if isMounted, let mountPoint = currentMountPoint {
-        printStatus("\(volumeName) is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
-        
-        // Pass a flag to avoid killing Proton Pass in this case
-        if !handleSecureProfile(mountPoint: mountPoint, shouldKillProtonPass: false) {
-            printError("Failed to handle secure profile workflow")
+}
+
+enum ProfileLauncher {
+    static func run() {
+        Log.status("Starting DMG Open Script")
+        Log.status("DMG Path: \(Paths.encryptedVault)")
+
+        guard FileSystem.exists(at: Paths.encryptedVault) else {
+            Log.error("DMG file not found at \(Paths.encryptedVault)")
             exit(1)
         }
-    } else {
-        // Step 3: Open Proton Pass (not critical if it fails)
-        _ = openProtonPassIfAvailable()
-        
-        // Step 4: Attempt to mount DMG
-        if let mountPoint = mountDMG(PathConfiguration.dmgPath) {
-            // In this case, we do want to kill Proton Pass (default behavior)
-            if !handleSecureProfile(mountPoint: mountPoint) {
-                printError("Failed to handle secure profile workflow")
+
+        let volumeName = DiskImage.volumeName(from: Paths.encryptedVault)
+        Log.status("Expected Volume Name: \(volumeName)")
+
+        let (isMounted, mountPoint) = DiskImage.mountStatus(for: Paths.encryptedVault)
+
+        if isMounted, let mountPoint {
+            Log.status("\(volumeName) is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
+
+            guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: false) else {
+                Log.error("Failed to handle secure profile workflow")
                 exit(1)
             }
         } else {
-            // Step 5: Fallback to personal profile
-            if !handlePersonalProfile() {
-                printError("Failed to handle personal profile workflow")
-                exit(1)
+            _ = ProtonPassApp.openWhenZenIsNotRunning()
+
+            if let mountPoint = DiskImage.attach(Paths.encryptedVault) {
+                guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: true) else {
+                    Log.error("Failed to handle secure profile workflow")
+                    exit(1)
+                }
+            } else {
+                guard PersonalProfileWorkflow.run() else {
+                    Log.error("Failed to handle personal profile workflow")
+                    exit(1)
+                }
             }
         }
+
+        Log.success("Zen Decrypt workflow completed successfully!")
     }
-    
-    printSuccess("Zen Decrypt workflow completed successfully!")
 }
 
-// MARK: - Entry Point
-
-// Run the main workflow
-runZenDecryptWorkflow()
+ProfileLauncher.run()
