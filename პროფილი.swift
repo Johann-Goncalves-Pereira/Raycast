@@ -13,6 +13,7 @@
 // @raycast.authorURL https://raycast.com/Johann-Goncalves-Pereira
 // @raycast.packageName Utilities
 
+import AppKit
 import Foundation
 
 // MARK: - Configuration & Constants
@@ -30,6 +31,8 @@ struct PathConfiguration {
 struct Constants {
     static let fileManager = FileManager.default
     static let volumesPrefix = "/Volumes/"
+    static let zenBundleIdentifier = "app.zen-browser.zen"
+    static let zenProcessName = "Zen"
 }
 
 // MARK: - Data Models
@@ -275,22 +278,218 @@ func ejectDMG(at mountPoint: String) -> Bool {
     }
 }
 
+/// Initializes AppKit so NSWorkspace and DistributedNotificationCenter deliver events in CLI scripts
+func activateAppKitEventLoop() {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+}
+
+/// Returns running Zen Browser application instances
+func runningZenApplications() -> [NSRunningApplication] {
+    NSWorkspace.shared.runningApplications.filter {
+        $0.bundleIdentifier == Constants.zenBundleIdentifier && !$0.isTerminated
+    }
+}
+
 /// Checks if Zen application is already running
 /// - Returns: True if Zen is running, false otherwise
 func isZenRunning() -> Bool {
-    let task = Process()
-    task.launchPath = "/usr/bin/pgrep"
-    task.arguments = ["-x", "Zen"]
-    let pipe = Pipe()
-    task.standardOutput = pipe
+    return !runningZenApplications().isEmpty
+}
 
+/// Waits for Zen Browser to launch after `open`
+/// - Parameter timeout: Maximum seconds to wait
+/// - Returns: True if Zen is running before the timeout expires
+func waitForZenToLaunch(timeout: TimeInterval = 15) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if isZenRunning() {
+            return true
+        }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+    }
+    return isZenRunning()
+}
+
+/// Kills the Proton Pass process if it's running
+/// - Returns: True if process was killed or not running, false if there was an error
+func killProtonPass() -> Bool {
+    let task = Process()
+    task.launchPath = "/usr/bin/pkill"
+    task.arguments = ["-f", "Proton Pass"]
+    
     do {
         try task.run()
         task.waitUntilExit()
-        return task.terminationStatus == 0
+        
+        if task.terminationStatus == 0 {
+            printSuccess("Proton Pass process killed successfully")
+            return true
+        } else if task.terminationStatus == 1 {
+            // Exit code 1 means no matching processes were found
+            printStatus("Proton Pass is not running")
+            return true
+        } else {
+            printError("Failed to kill Proton Pass process")
+            return false
+        }
     } catch {
-        printError("Failed to check if Zen is running: \(error)")
+        printError("Error killing Proton Pass process: \(error)")
         return false
+    }
+}
+
+/// Kills the Zen Browser process if it's running
+/// - Returns: True if process was killed or not running, false if there was an error
+func killZenBrowser() -> Bool {
+    let zenApps = runningZenApplications()
+    
+    if zenApps.isEmpty {
+        printStatus("Zen Browser is not running")
+        return true
+    }
+    
+    for app in zenApps {
+        app.forceTerminate()
+    }
+    
+    for _ in 0..<25 {
+        if !isZenRunning() {
+            printSuccess("Zen Browser process killed successfully")
+            return true
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+    }
+    
+    let task = Process()
+    task.launchPath = "/usr/bin/pkill"
+    task.arguments = ["-x", Constants.zenProcessName]
+    
+    do {
+        try task.run()
+        task.waitUntilExit()
+        
+        if !isZenRunning() {
+            printSuccess("Zen Browser process killed successfully")
+            return true
+        }
+        
+        printError("Failed to kill Zen Browser process")
+        return false
+    } catch {
+        printError("Error killing Zen Browser process: \(error)")
+        return false
+    }
+}
+
+// MARK: - Zen Session Monitor
+
+/// Result of waiting for Zen Browser to exit or a security event
+enum ZenWaitResult {
+    case normalExit
+    case securityTriggered
+}
+
+/// Monitors Zen Browser session for quit, sleep, and screen-lock events
+final class ZenSessionMonitor {
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var cfObserverToken: UnsafeMutableRawPointer?
+    private var didStop = false
+    private var result: ZenWaitResult = .normalExit
+    
+    /// Waits until Zen exits normally or a system security event triggers teardown
+    /// - Returns: Whether Zen quit normally or a security event forced shutdown
+    func waitForZenExitOrSecurityEvent() -> ZenWaitResult {
+        activateAppKitEventLoop()
+        cfObserverToken = Unmanaged.passUnretained(self).toOpaque()
+        registerObservers()
+        
+        while !didStop {
+            RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))
+            
+            if !didStop && !isZenRunning() {
+                stop(with: .normalExit)
+            }
+        }
+        
+        cleanup()
+        return result
+    }
+    
+    private func stop(with result: ZenWaitResult) {
+        guard !didStop else { return }
+        didStop = true
+        self.result = result
+    }
+    
+    private func handleSecurityEvent() {
+        guard !didStop else { return }
+        printStatus("System sleep/lock detected — securing vault...")
+        _ = killZenBrowser()
+        stop(with: .securityTriggered)
+    }
+    
+    private static let screenLockCallback: CFNotificationCallback = { _, observer, _, _, _ in
+        guard let observer = observer else { return }
+        let monitor = Unmanaged<ZenSessionMonitor>.fromOpaque(observer).takeUnretainedValue()
+        DispatchQueue.main.async {
+            monitor.handleSecurityEvent()
+        }
+    }
+    
+    private func registerObservers() {
+        workspaceObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.handleSecurityEvent()
+            }
+        )
+        
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDistributedCenter(),
+            cfObserverToken,
+            Self.screenLockCallback,
+            "com.apple.screenIsLocked" as CFString,
+            nil,
+            .deliverImmediately
+        )
+        
+        workspaceObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self = self, !self.didStop else { return }
+                if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                   app.bundleIdentifier == Constants.zenBundleIdentifier {
+                    self.stop(with: .normalExit)
+                }
+            }
+        )
+    }
+    
+    private func cleanup() {
+        if let token = cfObserverToken {
+            CFNotificationCenterRemoveObserver(
+                CFNotificationCenterGetDistributedCenter(),
+                token,
+                CFNotificationName("com.apple.screenIsLocked" as CFString),
+                nil
+            )
+            cfObserverToken = nil
+        }
+        for observer in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        workspaceObservers.removeAll()
+    }
+    
+    deinit {
+        cleanup()
     }
 }
 
@@ -342,9 +541,6 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true, should
     task.launchPath = "/usr/bin/open"
     
     var arguments = [PathConfiguration.zenAppPath]
-    if waitForClose {
-        arguments.insert("-W", at: 0) // Wait flag
-    }
     
     if let profilePath = profilePath, fileExists(at: profilePath) {
         arguments.append(contentsOf: ["--args", "--profile", profilePath])
@@ -358,9 +554,11 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true, should
     do {
         if waitForClose {
             printStatus("Zen Browser will open. The script will wait for it to be closed before continuing.")
+            printStatus("Monitoring for system sleep and screen lock events.")
         }
         
         try task.run()
+        task.waitUntilExit()
         
         // Kill Proton Pass right after Zen is opened, but only if shouldKillProtonPass is true
         if shouldKillProtonPass {
@@ -372,7 +570,21 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true, should
         }
         
         if waitForClose {
-            task.waitUntilExit()
+            guard waitForZenToLaunch() else {
+                printError("Zen Browser did not start within the expected time.")
+                return false
+            }
+            
+            let monitor = ZenSessionMonitor()
+            let waitResult = monitor.waitForZenExitOrSecurityEvent()
+            
+            switch waitResult {
+            case .normalExit:
+                printSuccess("Zen Browser operation completed successfully.")
+            case .securityTriggered:
+                printSuccess("Vault secured due to system sleep or lock.")
+            }
+            return true
         }
         
         if task.terminationStatus == 0 {
@@ -398,22 +610,22 @@ func openZenBrowser(with profilePath: String?, waitForClose: Bool = true, should
 func handleSecureProfile(mountPoint: String, shouldKillProtonPass: Bool = true) -> Bool {
     printSuccess("Profile successfully decrypted. Opening Zen Browser with secure profile...")
     
-    defer {
-        // Always try to eject the DMG when done
-        if !ejectDMG(at: mountPoint) {
-            printError("Failed to eject DMG properly")
-        }
-    }
-    
-    // Check if secure profile exists
+    let zenOpened: Bool
     if fileExists(at: PathConfiguration.secureProfilePath) {
         printStatus("Secure profile found at: \(PathConfiguration.secureProfilePath)")
-        return openZenBrowser(with: PathConfiguration.secureProfilePath, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
+        zenOpened = openZenBrowser(with: PathConfiguration.secureProfilePath, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
     } else {
         printError("Secure profile not found at '\(PathConfiguration.secureProfilePath)'")
         printStatus("Opening Zen Browser without specific profile...")
-        return openZenBrowser(with: nil, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
+        zenOpened = openZenBrowser(with: nil, waitForClose: true, shouldKillProtonPass: shouldKillProtonPass)
     }
+    
+    printStatus("Zen session ended. Ejecting vault...")
+    if !ejectDMG(at: mountPoint) {
+        printError("Failed to eject DMG properly")
+    }
+    
+    return zenOpened
 }
 
 /// Handles the personal profile workflow when DMG is not available
@@ -485,31 +697,3 @@ func runZenDecryptWorkflow() {
 
 // Run the main workflow
 runZenDecryptWorkflow()
-
-/// Kills the Proton Pass process if it's running
-/// - Returns: True if process was killed or not running, false if there was an error
-func killProtonPass() -> Bool {
-    let task = Process()
-    task.launchPath = "/usr/bin/pkill"
-    task.arguments = ["-f", "Proton Pass"]
-    
-    do {
-        try task.run()
-        task.waitUntilExit()
-        
-        if task.terminationStatus == 0 {
-            printSuccess("Proton Pass process killed successfully")
-            return true
-        } else if task.terminationStatus == 1 {
-            // Exit code 1 means no matching processes were found
-            printStatus("Proton Pass is not running")
-            return true
-        } else {
-            printError("Failed to kill Proton Pass process")
-            return false
-        }
-    } catch {
-        printError("Error killing Proton Pass process: \(error)")
-        return false
-    }
-}
