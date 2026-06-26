@@ -20,8 +20,11 @@ enum Paths {
     static let encryptedVault = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
     static let protonPassApp = "/Applications/Proton Pass.app"
     static let zenApp = "/Applications/Zen.app"
-    static let secureProfile = "/Volumes/Profile Secure/j3wki3fc.Secure"
+    static let secureVolumeRoot = "/Volumes/.com.apple.zen.framework"
+    static let secureProfile = secureVolumeRoot
     static let personalProfile = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
+    static let zenHostCache = "~/Library/Caches/app.zen-browser.zen"
+    static let zenProfilesIni = "~/Library/Application Support/zen/profiles.ini"
 }
 
 enum Zen {
@@ -116,6 +119,8 @@ enum DiskImage {
     }
 
     static func mountPoint(for imagePath: String) -> String? {
+        guard FileSystem.exists(at: Paths.secureVolumeRoot) else { return nil }
+
         do {
             let (exitCode, data) = try ProcessRunner.captureData(
                 executable: SystemPaths.hdiutil,
@@ -128,8 +133,8 @@ enum DiskImage {
 
             for image in inventory.images where image.imagePath == imagePath {
                 for entity in image.systemEntities ?? [] {
-                    if let mountPoint = entity.mountPoint {
-                        return mountPoint
+                    if entity.mountPoint == Paths.secureVolumeRoot {
+                        return Paths.secureVolumeRoot
                     }
                 }
             }
@@ -141,8 +146,15 @@ enum DiskImage {
     }
 
     static func mountStatus(for dmgPath: String) -> (isMounted: Bool, mountPoint: String?) {
-        let mountPoint = mountPoint(for: dmgPath)
-        return (mountPoint != nil, mountPoint)
+        guard FileSystem.exists(at: Paths.secureVolumeRoot) else {
+            return (false, nil)
+        }
+
+        guard let mountPoint = mountPoint(for: dmgPath) else {
+            return (false, nil)
+        }
+
+        return (true, mountPoint)
     }
 
     static func attach(_ dmgPath: String) -> String? {
@@ -153,7 +165,7 @@ enum DiskImage {
         do {
             let (exitCode, output) = try ProcessRunner.capture(
                 executable: SystemPaths.hdiutil,
-                arguments: ["attach", dmgPath, "-nobrowse"]
+                arguments: ["attach", dmgPath, "-nobrowse", "-mountpoint", Paths.secureVolumeRoot]
             )
 
             Log.status("hdiutil attach command finished.")
@@ -165,6 +177,11 @@ enum DiskImage {
 
             guard exitCode == 0 else {
                 return resolveMountFailure(output: output, exitCode: exitCode)
+            }
+
+            if FileSystem.exists(at: Paths.secureVolumeRoot) {
+                Log.success("DMG mounted successfully at \(Paths.secureVolumeRoot)")
+                return Paths.secureVolumeRoot
             }
 
             if let mountPoint = mountPoint(for: dmgPath) {
@@ -180,23 +197,53 @@ enum DiskImage {
     }
 
     static func detach(at mountPoint: String) -> Bool {
-        Log.status("Attempting to eject DMG at \(mountPoint)...")
+        for attempt in 1...3 {
+            Log.status("Detach attempt \(attempt)/3 at \(mountPoint)...")
+
+            do {
+                let (exitCode, output) = try ProcessRunner.capture(
+                    executable: SystemPaths.hdiutil,
+                    arguments: ["detach", mountPoint]
+                )
+
+                if exitCode == 0 {
+                    Log.success("Successfully ejected \(mountPoint). Output: \(output)")
+                    return true
+                }
+
+                Log.error("Error ejecting DMG \(mountPoint). Status: \(exitCode). Output: \(output)")
+
+                if attempt < 3 {
+                    Log.status("Retrying detach in 1s (resource may still be busy)...")
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+            } catch {
+                Log.error("Failed to run eject command for \(mountPoint): \(error)")
+
+                if attempt < 3 {
+                    Log.status("Retrying detach in 1s (resource may still be busy)...")
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+            }
+        }
+
+        Log.status("Attempting forced detach...")
 
         do {
             let (exitCode, output) = try ProcessRunner.capture(
                 executable: SystemPaths.hdiutil,
-                arguments: ["detach", mountPoint]
+                arguments: ["detach", mountPoint, "-force"]
             )
 
             if exitCode == 0 {
-                Log.success("Successfully ejected \(mountPoint). Output: \(output)")
+                Log.success("Successfully force-ejected \(mountPoint). Output: \(output)")
                 return true
             }
 
-            Log.error("Error ejecting DMG \(mountPoint). Status: \(exitCode). Output: \(output)")
+            Log.error("Forced detach failed for \(mountPoint). Status: \(exitCode). Output: \(output)")
             return false
         } catch {
-            Log.error("Failed to run eject command for \(mountPoint): \(error)")
+            Log.error("Failed to run forced eject command for \(mountPoint): \(error)")
             return false
         }
     }
@@ -209,8 +256,15 @@ enum DiskImage {
             else { continue }
 
             let mountPoint = String(parts.last!)
+            guard mountPoint == Paths.secureVolumeRoot else { continue }
+
             Log.success("DMG mounted successfully. Determined mount point: \(mountPoint)")
             return mountPoint
+        }
+
+        if FileSystem.exists(at: Paths.secureVolumeRoot) {
+            Log.success("DMG mounted successfully at \(Paths.secureVolumeRoot)")
+            return Paths.secureVolumeRoot
         }
 
         Log.error("DMG attach seemed to succeed but could not determine mount point.")
@@ -237,6 +291,100 @@ enum DiskImage {
 
         Log.error("DMG mounting failed for other reasons.")
         exit(1)
+    }
+}
+
+enum HostFootprint {
+    private static let securePathMarker = ".com.apple.zen.framework"
+    private static let personalProfileFolder = "zi76byi5.Pesonal"
+
+    private struct IniSection {
+        let header: String
+        var lines: [String]
+
+        var pathValue: String? {
+            lines.first { $0.hasPrefix("Path=") }.map { String($0.dropFirst(5)) }
+        }
+
+        var isDefault: Bool {
+            lines.contains { $0.trimmingCharacters(in: .whitespaces) == "Default=1" }
+        }
+
+        func referencesSecureVolume() -> Bool {
+            guard let path = pathValue else { return false }
+            return path == Paths.secureVolumeRoot || path.contains(securePathMarker)
+        }
+    }
+
+    static func purgeZenHostCache() {
+        let path = FileSystem.expandingTilde(in: Paths.zenHostCache)
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    static func scrubZenProfilesIni() {
+        let path = FileSystem.expandingTilde(in: Paths.zenProfilesIni)
+        guard FileSystem.exists(at: path),
+              let content = try? String(contentsOfFile: path, encoding: .utf8)
+        else { return }
+
+        var sections = parseSections(from: content)
+        let removedHadDefault = sections.contains { $0.referencesSecureVolume() && $0.isDefault }
+        let originalCount = sections.count
+        sections.removeAll { $0.referencesSecureVolume() }
+
+        guard sections.count < originalCount else { return }
+
+        if removedHadDefault {
+            reassignDefault(in: &sections)
+        }
+
+        let updated = serializeSections(sections)
+        try? updated.write(toFile: path, atomically: true, encoding: .utf8)
+        Log.status("Removed secure profile references from profiles.ini")
+    }
+
+    private static func parseSections(from content: String) -> [IniSection] {
+        var sections: [IniSection] = []
+        var currentHeader: String?
+        var currentLines: [String] = []
+
+        for line in content.components(separatedBy: .newlines) {
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                if let header = currentHeader {
+                    sections.append(IniSection(header: header, lines: currentLines))
+                }
+                currentHeader = line
+                currentLines = []
+            } else if currentHeader != nil {
+                currentLines.append(line)
+            }
+        }
+
+        if let header = currentHeader {
+            sections.append(IniSection(header: header, lines: currentLines))
+        }
+
+        return sections
+    }
+
+    private static func serializeSections(_ sections: [IniSection]) -> String {
+        sections.map { section in
+            ([section.header] + section.lines).joined(separator: "\n")
+        }.joined(separator: "\n") + "\n"
+    }
+
+    private static func reassignDefault(in sections: inout [IniSection]) {
+        for index in sections.indices {
+            sections[index].lines.removeAll { $0.trimmingCharacters(in: .whitespaces) == "Default=1" }
+        }
+
+        if let personalIndex = sections.firstIndex(where: {
+            $0.header.hasPrefix("[Profile") && ($0.pathValue?.contains(personalProfileFolder) == true)
+        }) {
+            sections[personalIndex].lines.append("Default=1")
+        } else if let firstProfileIndex = sections.firstIndex(where: { $0.header.hasPrefix("[Profile") }) {
+            sections[firstProfileIndex].lines.append("Default=1")
+        }
     }
 }
 
@@ -564,7 +712,11 @@ enum SecureVaultWorkflow {
             )
         }
 
-        Log.status("Zen session ended. Ejecting vault...")
+        Log.status("Zen session ended. Purging host footprint...")
+        HostFootprint.purgeZenHostCache()
+        HostFootprint.scrubZenProfilesIni()
+
+        Log.status("Ejecting vault...")
 
         if !DiskImage.detach(at: mountPoint) {
             Log.error("Failed to eject DMG properly")
@@ -609,13 +761,12 @@ enum ProfileLauncher {
             exit(1)
         }
 
-        let volumeName = DiskImage.volumeName(from: Paths.encryptedVault)
-        Log.status("Expected Volume Name: \(volumeName)")
+        Log.status("Expected mount point: \(Paths.secureVolumeRoot)")
 
         let (isMounted, mountPoint) = DiskImage.mountStatus(for: Paths.encryptedVault)
 
         if isMounted, let mountPoint {
-            Log.status("\(volumeName) is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
+            Log.status("Secure vault is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
 
             guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: false) else {
                 Log.error("Failed to handle secure profile workflow")

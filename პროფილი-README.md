@@ -31,7 +31,8 @@ flowchart TB
 
     subgraph dmg [DMG Layer]
         CheckMount[DiskImage.mountStatus]
-        Mount[DiskImage.attach]
+        Mount[DiskImage.attach with mountpoint]
+        Footprint[HostFootprint purge]
         Eject[DiskImage.detach]
     end
 
@@ -55,7 +56,8 @@ flowchart TB
     Mount -->|auth cancelled| Personal
     Secure --> Zen
     Zen --> Monitor
-    Monitor --> Eject
+    Monitor --> Footprint
+    Footprint --> Eject
     Personal --> Zen
 ```
 
@@ -77,8 +79,10 @@ flowchart TD
     TryMount -->|Auth cancelled| Personal[PersonalProfileWorkflow]
     TryMount -->|Other failure| Exit2([exit 1])
 
-    SecureSkipPass --> Eject1[DiskImage.detach]
-    SecureKillPass --> Eject2[DiskImage.detach]
+    SecureSkipPass --> Purge1[HostFootprint purge]
+    SecureKillPass --> Purge2[HostFootprint purge]
+    Purge1 --> Eject1[DiskImage.detach]
+    Purge2 --> Eject2[DiskImage.detach]
     Personal --> Done([Success — no DMG to eject])
 
     Eject1 --> Success([printSuccess + exit 0])
@@ -96,9 +100,10 @@ sequenceDiagram
     participant Script
     participant Zen
     participant Monitor as SecureZenSessionMonitor
+    participant Footprint as HostFootprint
     participant macOS
 
-    Script->>Zen: open Zen.app --profile secure
+    Script->>Zen: open Zen.app --profile secureVolumeRoot
     Script->>Script: waitUntilLaunched
     Script->>Monitor: waitUntilSessionEnds
     Monitor->>Monitor: AppKitEventLoop.activate
@@ -119,6 +124,7 @@ sequenceDiagram
         Monitor-->>Script: systemLockOrSleep
     end
 
+    Script->>Footprint: purgeZenHostCache + scrubZenProfilesIni
     Script->>Script: DiskImage.detach at mountPoint
     Script->>Script: workflow complete
 ```
@@ -146,8 +152,10 @@ flowchart LR
     Lock --> SecurityStop
     Sleep --> SecurityStop
 
-    NormalStop --> Eject[DiskImage.detach in SecureVaultWorkflow]
-    SecurityStop --> Eject
+    NormalStop --> Purge[HostFootprint purge in SecureVaultWorkflow]
+    SecurityStop --> Purge
+
+    Purge --> Eject[DiskImage.detach in SecureVaultWorkflow]
 ```
 
 | Event | API | On trigger |
@@ -170,8 +178,11 @@ All paths are defined in `Paths` inside [`პროფილი.swift`](პრ�
 | `Paths.encryptedVault` | `~/Library/Application Support/zen/Profiles/Profile.dmg` | Encrypted vault image |
 | `Paths.protonPassApp` | `/Applications/Proton Pass.app` | Password manager (opened before mount) |
 | `Paths.zenApp` | `/Applications/Zen.app` | Zen Browser |
-| `Paths.secureProfile` | `/Volumes/Profile Secure/j3wki3fc.Secure` | Profile inside mounted DMG |
+| `Paths.secureVolumeRoot` | `/Volumes/.com.apple.zen.framework` | Hidden fixed DMG mount point (profile at DMG root) |
+| `Paths.secureProfile` | Same as `secureVolumeRoot` | Zen profile path passed to `--profile` |
 | `Paths.personalProfile` | `~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal` | Fallback unencrypted profile |
+| `Paths.zenHostCache` | `~/Library/Caches/app.zen-browser.zen` | Host-side Zen cache purged after secure session |
+| `Paths.zenProfilesIni` | `~/Library/Application Support/zen/profiles.ini` | Zen profile registry scrubbed after secure session |
 
 Zen identifiers in `Zen`:
 
@@ -188,18 +199,20 @@ Zen identifiers in `Zen`:
 
 - Skips Proton Pass launch.
 - Skips killing Proton Pass (`terminateProtonPassAfterLaunch: false`).
-- Opens Zen with secure profile.
+- Opens Zen with secure profile at `secureVolumeRoot`.
 - Monitors session until quit, lock, or sleep.
-- Ejects DMG when session ends.
+- Purges host cache and scrubs `profiles.ini`.
+- Ejects DMG when session ends (with detach retry).
 
 ### 2. Fresh mount (happy path)
 
 1. Opens Proton Pass (if Zen is not already running).
-2. Runs `hdiutil attach` — macOS prompts for DMG password.
+2. Runs `hdiutil attach -nobrowse -mountpoint /Volumes/.com.apple.zen.framework` — macOS prompts for DMG password.
 3. Kills Proton Pass after Zen opens.
 4. Opens Zen with secure profile.
 5. Monitors session.
-6. Ejects DMG when session ends.
+6. Purges host cache and scrubs `profiles.ini`.
+7. Ejects DMG when session ends (with detach retry).
 
 ### 3. Mount cancelled / wrong password
 
@@ -219,8 +232,10 @@ Zen identifiers in `Zen`:
 
 - `SecureZenSessionMonitor` detects quit via notification or polling.
 - Prints `Zen Browser operation completed successfully.`
-- Prints `Zen session ended. Ejecting vault...`
-- Runs `hdiutil detach`.
+- Prints `Zen session ended. Purging host footprint...`
+- Removes `~/Library/Caches/app.zen-browser.zen` and scrubs secure entries from `profiles.ini`.
+- Prints `Ejecting vault...`
+- Runs `hdiutil detach` (up to 3 attempts, 1s apart; `-force` fallback).
 
 ### 7. Screen lock or sleep (secure session)
 
@@ -228,7 +243,8 @@ Zen identifiers in `Zen`:
 - Prints `System sleep/lock detected — securing vault...`
 - Force-terminates Zen via `NSRunningApplication.forceTerminate()` (falls back to `pkill -x Zen`).
 - Prints `Vault secured due to system sleep or lock.`
-- Ejects DMG.
+- Purges host cache and scrubs `profiles.ini`.
+- Ejects DMG (with detach retry).
 
 ### 8. Zen already running at start
 
@@ -239,7 +255,14 @@ Zen identifiers in `Zen`:
 
 - No `SecureZenSessionMonitor`.
 - No DMG mount or eject.
+- No host footprint purge (secure path never ran).
 - Zen opens and script exits immediately.
+
+### 10. Hidden mount point (OpSec)
+
+- DMG mounts at `/Volumes/.com.apple.zen.framework` (dot-prefixed, hidden in Finder).
+- `ps aux` shows a generic system-looking `--profile` path instead of `Profile Secure` / `j3wki3fc.Secure`.
+- Profile files live at the DMG root (not in a subfolder).
 
 ---
 
@@ -256,6 +279,23 @@ flowchart TD
     Pkill -->|Gone| DoneOK3[Return true]
     Pkill -->|Still running| DoneFail[Return false]
 ```
+
+---
+
+## DMG Detach Strategy
+
+```mermaid
+flowchart TD
+    DetachStart[DiskImage.detach] --> AttemptLoop[Attempt 1 to 3 hdiutil detach]
+    AttemptLoop -->|Success| DoneOK[Return true]
+    AttemptLoop -->|Fail| Wait1s[Sleep 1s then retry]
+    Wait1s --> AttemptLoop
+    AttemptLoop -->|All 3 failed| ForceDetach["hdiutil detach -force"]
+    ForceDetach -->|Success| DoneForce[Return true]
+    ForceDetach -->|Fail| DoneFail[Return false]
+```
+
+Handles "Resource busy" races when Zen releases file handles slowly after quit or force-terminate.
 
 ---
 
@@ -290,12 +330,15 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 | Scenario | Expected result |
 |---|---|
-| Mount DMG → use Zen → Cmd+Q | DMG ejects, script exits successfully |
-| Already-mounted DMG path | Skips Proton Pass, monitors, ejects on quit |
-| Lock screen (⌃⌘Q) during secure session | Zen killed, DMG ejected |
-| Close lid / sleep during secure session | Zen killed, DMG ejected |
-| Cancel DMG password prompt | Personal profile opens, no eject |
+| Mount DMG → use Zen → Cmd+Q | Host cache purged, profiles.ini scrubbed, DMG ejects, script exits successfully |
+| Already-mounted DMG path | Skips Proton Pass, monitors, purges footprint, ejects on quit |
+| Lock screen (⌃⌘Q) during secure session | Zen killed, footprint purged, DMG ejected |
+| Close lid / sleep during secure session | Zen killed, footprint purged, DMG ejected |
+| Cancel DMG password prompt | Personal profile opens, no purge, no eject |
 | Missing DMG file | Script exits with code 1 |
+| Quick Cmd+Q after browsing | Detach retry succeeds despite busy resource |
+| After secure session | `~/Library/Caches/app.zen-browser.zen` removed; no `.com.apple.zen.framework` in profiles.ini |
+| `ps aux` during secure session | Shows `/Volumes/.com.apple.zen.framework`, not `Profile Secure` |
 | Run from CLI: `./პროფილი.swift` | Same behavior as Raycast |
 
 ---
@@ -309,6 +352,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 ├── ProcessRunner                      — shell command execution
 ├── DiskImagePlist models              — hdiutil plist parsing
 ├── DiskImage                          — attach, detach, mount status
+├── HostFootprint                      — cache purge + profiles.ini scrub
 ├── AppKitEventLoop                    — CLI notification bootstrap
 ├── ZenApp / ProtonPassApp             — process lifecycle
 ├── SecureZenSessionMonitor            — sleep / lock / quit monitoring
@@ -344,7 +388,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 3. Update the affected **diagrams** (mermaid blocks must use valid syntax: no spaces in node IDs, no HTML in labels).
 4. Update the **tables** and **behavior list** to match the new logic exactly.
 5. Add or remove **test scenarios** if behavior changed.
-6. Verify diagrams still reflect the real call order (especially `SecureVaultWorkflow` → `ZenBrowserLauncher` → `SecureZenSessionMonitor` → `DiskImage.detach`).
+6. Verify diagrams still reflect the real call order (especially `SecureVaultWorkflow` → `ZenBrowserLauncher` → `SecureZenSessionMonitor` → `HostFootprint` → `DiskImage.detach`).
 
 ### Diagram rules used here
 
