@@ -37,6 +37,7 @@ flowchart TB
     end
 
     subgraph apps [Application Layer]
+        Keychain[VaultCredentialStore.retrieveWithBiometrics]
         ProtonPass[ProtonPassApp.openWhenZenIsNotRunning]
         Zen[ZenBrowserLauncher.launch]
         Monitor[SecureZenSessionMonitor]
@@ -50,7 +51,9 @@ flowchart TB
     Raycast --> Run
     Run --> CheckMount
     CheckMount -->|already mounted| Secure
-    CheckMount -->|not mounted| ProtonPass
+    CheckMount -->|not mounted| Keychain
+    Keychain -->|password retrieved| Mount
+    Keychain -->|cancel or not configured| ProtonPass
     ProtonPass --> Mount
     Mount -->|success| Secure
     Mount -->|auth cancelled| Personal
@@ -72,21 +75,30 @@ flowchart TD
     ValidateDMG -->|Yes| CheckMounted{DMG already mounted?}
 
     CheckMounted -->|Yes| SecureSkipPass[SecureVaultWorkflow<br/>terminateProtonPassAfterLaunch: false]
-    CheckMounted -->|No| OpenPass[ProtonPassApp.openWhenZenIsNotRunning]
+    CheckMounted -->|No| TouchID[VaultCredentialStore.retrieveWithBiometrics]
 
-    OpenPass --> TryMount{DiskImage.attach}
+    TouchID -->|password retrieved| StdinMount[DiskImage.attach with -stdinpass]
+    TouchID -->|cancel / not configured| OpenPass[ProtonPassApp.openWhenZenIsNotRunning]
+    StdinMount -->|auth error| OpenPass
+
+    OpenPass --> TryMount{DiskImage.attach interactive}
+    StdinMount -->|Success| SecureTouchID[SecureVaultWorkflow<br/>terminateProtonPassAfterLaunch: false]
     TryMount -->|Success| SecureKillPass[SecureVaultWorkflow<br/>terminateProtonPassAfterLaunch: true]
     TryMount -->|Auth cancelled| Personal[PersonalProfileWorkflow]
     TryMount -->|Other failure| Exit2([exit 1])
+    StdinMount -->|Other failure| Exit3([exit 1])
 
     SecureSkipPass --> Purge1[HostFootprint purge]
-    SecureKillPass --> Purge2[HostFootprint purge]
+    SecureTouchID --> Purge2[HostFootprint purge]
+    SecureKillPass --> Purge3[HostFootprint purge]
     Purge1 --> Eject1[DiskImage.detach]
     Purge2 --> Eject2[DiskImage.detach]
+    Purge3 --> Eject3[DiskImage.detach]
     Personal --> Done([Success — no DMG to eject])
 
     Eject1 --> Success([printSuccess + exit 0])
     Eject2 --> Success
+    Eject3 --> Success
 ```
 
 ---
@@ -176,7 +188,7 @@ All paths are defined in `Paths` inside [`პროფილი.swift`](პრ�
 | Constant | Path | Purpose |
 |---|---|---|
 | `Paths.encryptedVault` | `~/Library/Application Support/zen/Profiles/Profile.dmg` | Encrypted vault image |
-| `Paths.protonPassApp` | `/Applications/Proton Pass.app` | Password manager (opened before mount) |
+| `Paths.protonPassApp` | `/Applications/Proton Pass.app` | Password manager (fallback when Touch ID mount fails) |
 | `Paths.zenApp` | `/Applications/Zen.app` | Zen Browser |
 | `Paths.secureVolumeRoot` | `/Volumes/.com.apple.zen.framework` | Hidden fixed DMG mount point (profile at DMG root) |
 | `Paths.secureProfile` | Same as `secureVolumeRoot` | Zen profile path passed to `--profile` |
@@ -191,6 +203,13 @@ Zen identifiers in `Zen`:
 | `zenBundleIdentifier` | `Zen.bundleIdentifier` (`app.zen-browser.zen`) |
 | `zenProcessName` | `Zen.processName` (`Zen`) |
 
+Keychain identifiers in `VaultCredentialStore`:
+
+| Constant | Value |
+|---|---|
+| `VaultCredentialStore.service` | `com.johann.zen.secure-vault` |
+| `VaultCredentialStore.account` | `Profile.dmg` |
+
 ---
 
 ## Behavior Reference
@@ -204,31 +223,43 @@ Zen identifiers in `Zen`:
 - Purges host cache and scrubs `profiles.ini`.
 - Ejects DMG when session ends (with detach retry).
 
-### 2. Fresh mount (happy path)
+### 2. Fresh mount — Touch ID happy path
 
-1. Opens Proton Pass (if Zen is not already running).
-2. Runs `hdiutil attach -nobrowse -mountpoint /Volumes/.com.apple.zen.framework` — macOS prompts for DMG password.
-3. Kills Proton Pass after Zen opens.
+1. Prompts Touch ID via `VaultCredentialStore.retrieveWithBiometrics`.
+2. Retrieves DMG passphrase from Keychain (Touch ID protected; separate from Mac login password).
+3. Runs `hdiutil attach -stdinpass -nobrowse -mountpoint /Volumes/.com.apple.zen.framework` — no Proton Pass, no manual password dialog.
 4. Opens Zen with secure profile.
 5. Monitors session.
 6. Purges host cache and scrubs `profiles.ini`.
 7. Ejects DMG when session ends (with detach retry).
 
-### 3. Mount cancelled / wrong password
+### 3. Fresh mount — Proton Pass fallback
+
+When Touch ID is cancelled, unavailable, not configured, or the stored passphrase fails:
+
+1. Opens Proton Pass (if Zen is not already running).
+2. Runs `hdiutil attach -nobrowse -mountpoint /Volumes/.com.apple.zen.framework` — macOS prompts for DMG password.
+3. Kills Proton Pass after Zen opens (only if Proton Pass was opened in this fallback path).
+4. Opens Zen with secure profile.
+5. Monitors session.
+6. Purges host cache and scrubs `profiles.ini`.
+7. Ejects DMG when session ends (with detach retry).
+
+### 4. Mount cancelled / wrong password
 
 - Detects auth errors in `hdiutil` output (`Authentication_Canceled`, `cancelled`, etc.).
 - Falls back to **personal profile** (no DMG, no monitoring, no eject).
 - Opens Zen with `ZenBrowserLauncher.Session.immediate` and returns immediately.
 
-### 4. Mount failure (non-auth)
+### 5. Mount failure (non-auth)
 
 - Prints error and calls `exit(1)`.
 
-### 5. DMG file missing
+### 6. DMG file missing
 
 - Prints error and calls `exit(1)` before any mount attempt.
 
-### 6. Zen manual quit (secure session)
+### 7. Zen manual quit (secure session)
 
 - `SecureZenSessionMonitor` detects quit via notification or polling.
 - Prints `Zen Browser operation completed successfully.`
@@ -237,7 +268,7 @@ Zen identifiers in `Zen`:
 - Prints `Ejecting vault...`
 - Runs `hdiutil detach` (up to 3 attempts, 1s apart; `-force` fallback).
 
-### 7. Screen lock or sleep (secure session)
+### 8. Screen lock or sleep (secure session)
 
 - Monitor receives lock/sleep event.
 - Prints `System sleep/lock detected — securing vault...`
@@ -246,23 +277,40 @@ Zen identifiers in `Zen`:
 - Purges host cache and scrubs `profiles.ini`.
 - Ejects DMG (with detach retry).
 
-### 8. Zen already running at start
+### 9. Zen already running at start
 
 - `ProtonPassApp.openWhenZenIsNotRunning` skips Proton Pass.
 - `open` may focus the existing Zen instance instead of spawning a new one.
 
-### 9. Personal profile fallback
+### 10. Personal profile fallback
 
 - No `SecureZenSessionMonitor`.
 - No DMG mount or eject.
 - No host footprint purge (secure path never ran).
 - Zen opens and script exits immediately.
 
-### 10. Hidden mount point (OpSec)
+### 11. Hidden mount point (OpSec)
 
 - DMG mounts at `/Volumes/.com.apple.zen.framework` (dot-prefixed, hidden in Finder).
 - `ps aux` shows a generic system-looking `--profile` path instead of `Profile Secure` / `j3wki3fc.Secure`.
 - Profile files live at the DMG root (not in a subfolder).
+
+### 12. One-time vault password setup (`--store-vault-password`)
+
+Store the DMG encryption password in Keychain, protected by Touch ID:
+
+```bash
+pbpaste | ./პროფილი.swift --store-vault-password
+```
+
+Copy the vault password from Proton Pass first, then run the command above. The password is stored under `VaultCredentialStore.service` / `VaultCredentialStore.account` with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Touch ID is enforced on every read via `LAContext` (required for unsigned Raycast/CLI scripts — item-level `SecAccessControl` biometry needs code signing entitlements).
+
+**Security notes:**
+
+- Vault passphrase is separate from your Mac login password; Touch ID is required before each Keychain read.
+- Uses the file-based Keychain (`kSecUseDataProtectionKeychain: false`) so the script can run without app entitlements.
+- Item is device-only, not iCloud-synced.
+- Proton Pass remains the recovery source of truth; fallback path is unchanged.
 
 ---
 
@@ -315,9 +363,12 @@ Raycast `silent` mode surfaces this output in the Raycast log / terminal when ru
 
 - **macOS** with `hdiutil`, `open`, `pkill`, `pgrep`
 - **Zen Browser** at `/Applications/Zen.app`
-- **Proton Pass** (optional) at `/Applications/Proton Pass.app`
+- **Proton Pass** (optional fallback) at `/Applications/Proton Pass.app`
 - **Encrypted DMG** at the configured `dmgPath`
 - **AppKit** — imported for `NSWorkspace`, `NSRunningApplication`, run loop, and screen-lock notifications
+- **LocalAuthentication** — Touch ID prompt for Keychain vault unlock
+- **Security** — Keychain storage and retrieval of DMG passphrase
+- **Touch ID** Mac (or skip to Proton Pass fallback on machines without biometry)
 - Script must **remain running** for the full secure session (Raycast waits until the script exits)
 
 ### Run loop constraint
@@ -330,8 +381,12 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 | Scenario | Expected result |
 |---|---|
+| One-time setup: `pbpaste \| ./პროფილი.swift --store-vault-password` | Vault password stored in Keychain (Touch ID protected), exits 0 |
+| Touch ID mount happy path | Touch ID prompt → mount via `-stdinpass` → Zen secure profile, Proton Pass never opens |
+| Cancel Touch ID | Proton Pass opens → manual password prompt → secure or personal profile |
+| Wrong stored Keychain password | Keychain mount fails → Proton Pass fallback works |
 | Mount DMG → use Zen → Cmd+Q | Host cache purged, profiles.ini scrubbed, DMG ejects, script exits successfully |
-| Already-mounted DMG path | Skips Proton Pass, monitors, purges footprint, ejects on quit |
+| Already-mounted DMG path | Skips Touch ID and Proton Pass, monitors, purges footprint, ejects on quit |
 | Lock screen (⌃⌘Q) during secure session | Zen killed, footprint purged, DMG ejected |
 | Close lid / sleep during secure session | Zen killed, footprint purged, DMG ejected |
 | Cancel DMG password prompt | Personal profile opens, no purge, no eject |
@@ -354,6 +409,8 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 ├── DiskImage                          — attach, detach, mount status
 ├── HostFootprint                      — cache purge + profiles.ini scrub
 ├── AppKitEventLoop                    — CLI notification bootstrap
+├── VaultCredentialStore               — Touch ID Keychain store/retrieve
+├── VaultCredentialSetup               — --store-vault-password CLI mode
 ├── ZenApp / ProtonPassApp             — process lifecycle
 ├── SecureZenSessionMonitor            — sleep / lock / quit monitoring
 ├── ZenBrowserLauncher                 — open Zen (monitored or immediate)
@@ -401,7 +458,12 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 ```bash
 # Typecheck the script
-swiftc -typecheck პროფილი.swift -framework AppKit -framework Foundation
+swiftc -typecheck პროფილი.swift \
+  -framework AppKit -framework Foundation \
+  -framework LocalAuthentication -framework Security
+
+# One-time Keychain setup (copy password from Proton Pass first)
+pbpaste | ./პროფილი.swift --store-vault-password
 
 # Run manually and walk through the testing checklist above
 ./პროფილი.swift

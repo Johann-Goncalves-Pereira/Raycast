@@ -15,6 +15,8 @@
 
 import AppKit
 import Foundation
+import LocalAuthentication
+import Security
 
 enum Paths {
     static let encryptedVault = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
@@ -59,7 +61,11 @@ enum FileSystem {
 }
 
 struct ProcessRunner {
-    static func captureData(executable: String, arguments: [String]) throws -> (exitCode: Int32, data: Data) {
+    static func captureData(
+        executable: String,
+        arguments: [String],
+        stdin: Data? = nil
+    ) throws -> (exitCode: Int32, data: Data) {
         let task = Process()
         task.launchPath = executable
         task.arguments = arguments
@@ -68,15 +74,28 @@ struct ProcessRunner {
         task.standardOutput = pipe
         task.standardError = pipe
 
-        try task.run()
+        if let stdin {
+            let inputPipe = Pipe()
+            task.standardInput = inputPipe
+            try task.run()
+            inputPipe.fileHandleForWriting.write(stdin)
+            inputPipe.fileHandleForWriting.closeFile()
+        } else {
+            try task.run()
+        }
+
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
 
         return (task.terminationStatus, data)
     }
 
-    static func capture(executable: String, arguments: [String]) throws -> (exitCode: Int32, output: String) {
-        let (exitCode, data) = try captureData(executable: executable, arguments: arguments)
+    static func capture(
+        executable: String,
+        arguments: [String],
+        stdin: Data? = nil
+    ) throws -> (exitCode: Int32, output: String) {
+        let (exitCode, data) = try captureData(executable: executable, arguments: arguments, stdin: stdin)
         let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (exitCode, output)
@@ -157,15 +176,30 @@ enum DiskImage {
         return (true, mountPoint)
     }
 
-    static func attach(_ dmgPath: String) -> String? {
+    static func attach(_ dmgPath: String, passphrase: String? = nil) -> String? {
         Log.status("Attempting to mount \(dmgPath)...")
-        print("IMPORTANT: If the DMG is encrypted, macOS will now ask for the password.")
-        print("This script cannot enter the password for you.")
+
+        if passphrase == nil {
+            print("IMPORTANT: If the DMG is encrypted, macOS will now ask for the password.")
+            print("This script cannot enter the password for you.")
+        }
+
+        var arguments = ["attach", dmgPath, "-nobrowse", "-mountpoint", Paths.secureVolumeRoot]
+        var stdinData: Data?
+
+        if let passphrase {
+            arguments.append("-stdinpass")
+            let trimmed = passphrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            var input = Data(trimmed.utf8)
+            input.append(0)
+            stdinData = input
+        }
 
         do {
             let (exitCode, output) = try ProcessRunner.capture(
                 executable: SystemPaths.hdiutil,
-                arguments: ["attach", dmgPath, "-nobrowse", "-mountpoint", Paths.secureVolumeRoot]
+                arguments: arguments,
+                stdin: stdinData
             )
 
             Log.status("hdiutil attach command finished.")
@@ -176,7 +210,11 @@ enum DiskImage {
             }
 
             guard exitCode == 0 else {
-                return resolveMountFailure(output: output, exitCode: exitCode)
+                return resolveMountFailure(
+                    output: output,
+                    exitCode: exitCode,
+                    interactiveMount: passphrase == nil
+                )
             }
 
             if FileSystem.exists(at: Paths.secureVolumeRoot) {
@@ -272,20 +310,31 @@ enum DiskImage {
         return nil
     }
 
-    private static func resolveMountFailure(output: String, exitCode: Int32) -> String? {
+    private static func isAuthenticationFailure(_ output: String) -> Bool {
+        let lowered = output.lowercased()
+        let markers = [
+            "authentication_canceled",
+            "authentication error",
+            "attach canceled",
+            "attach cancelled",
+            "hdiutil: attach canceled",
+            "incorrect password"
+        ]
+        return markers.contains(where: lowered.contains)
+    }
+
+    private static func resolveMountFailure(
+        output: String,
+        exitCode: Int32,
+        interactiveMount: Bool
+    ) -> String? {
         Log.error("Error mounting DMG. hdiutil exited with status \(exitCode).")
 
-        let passwordPromptFailures = [
-            "Authentication_Canceled",
-            "authentication error",
-            "cancelled",
-            "attach canceled",
-            "hdiutil: attach canceled"
-        ]
-
-        if passwordPromptFailures.contains(where: output.contains) {
+        if isAuthenticationFailure(output) {
             Log.error("Mounting failed due to password prompt cancellation or incorrect password.")
-            Log.status("Will proceed with personal profile instead.")
+            if interactiveMount {
+                Log.status("Will proceed with personal profile instead.")
+            }
             return nil
         }
 
@@ -394,6 +443,126 @@ enum AppKitEventLoop {
     }
 }
 
+enum VaultCredentialStore {
+    static let service = "com.johann.zen.secure-vault"
+    static let account = "Profile.dmg"
+
+    private static func baseQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecUseDataProtectionKeychain as String: kCFBooleanFalse as Any
+        ]
+    }
+
+    private static func authenticateWithBiometrics(reason: String) -> Bool {
+        AppKitEventLoop.activate()
+
+        let context = LAContext()
+        var biometryError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &biometryError) else {
+            return false
+        }
+
+        var success = false
+        let semaphore = DispatchSemaphore(value: 0)
+
+        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { ok, _ in
+            success = ok
+            semaphore.signal()
+        }
+
+        while semaphore.wait(timeout: .now()) == .timedOut {
+            RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+        }
+
+        return success
+    }
+
+    static func storePassword(_ password: String) -> Bool {
+        guard let passwordData = password.data(using: .utf8) else {
+            Log.error("Invalid vault password encoding")
+            return false
+        }
+
+        let base = baseQuery()
+        SecItemDelete(base as CFDictionary)
+
+        var addQuery = base
+        addQuery[kSecValueData as String] = passwordData
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+
+        if status == errSecSuccess {
+            Log.success("Vault password stored in Keychain (Touch ID required to read)")
+            return true
+        }
+
+        Log.error("Failed to store vault password in Keychain (status \(status))")
+        return false
+    }
+
+    static func retrieveWithBiometrics() -> String? {
+        guard authenticateWithBiometrics(reason: "Unlock secure vault") else {
+            if LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+                Log.status("Touch ID cancelled or failed")
+            } else {
+                Log.status("Touch ID unavailable — skipping Keychain vault unlock")
+            }
+            return nil
+        }
+
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        switch status {
+        case errSecSuccess:
+            guard let data = result as? Data,
+                  let password = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !password.isEmpty
+            else {
+                Log.error("Keychain returned invalid vault password data")
+                return nil
+            }
+            return password
+        case errSecItemNotFound:
+            Log.status("Vault password not configured in Keychain — run --store-vault-password")
+            return nil
+        default:
+            Log.status("Keychain vault unlock failed (status \(status))")
+            return nil
+        }
+    }
+}
+
+enum VaultCredentialSetup {
+    static func run() {
+        Log.status("Reading vault password from stdin...")
+
+        let input = FileHandle.standardInput.readDataToEndOfFile()
+        guard let password = String(data: input, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !password.isEmpty
+        else {
+            Log.error("No password provided on stdin")
+            exit(1)
+        }
+
+        if VaultCredentialStore.storePassword(password) {
+            exit(0)
+        }
+
+        exit(1)
+    }
+}
+
 enum ZenApp {
     static var runningInstances: [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter {
@@ -455,15 +624,16 @@ enum ZenApp {
 }
 
 enum ProtonPassApp {
+    /// Returns `true` only when Proton Pass was actually launched.
     static func openWhenZenIsNotRunning() -> Bool {
         if ZenApp.isRunning {
             Log.status("Zen is already running, skipping Proton Pass launch")
-            return true
+            return false
         }
 
         guard FileSystem.exists(at: Paths.protonPassApp) else {
             Log.error("Proton Pass not found at '\(Paths.protonPassApp)'")
-            return true
+            return false
         }
 
         Log.status("Opening Proton Pass...")
@@ -474,7 +644,7 @@ enum ProtonPassApp {
             return true
         } catch {
             Log.error("Failed to open Proton Pass: \(error)")
-            return true
+            return false
         }
     }
 
@@ -773,10 +943,27 @@ enum ProfileLauncher {
                 exit(1)
             }
         } else {
-            _ = ProtonPassApp.openWhenZenIsNotRunning()
+            AppKitEventLoop.activate()
 
-            if let mountPoint = DiskImage.attach(Paths.encryptedVault) {
-                guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: true) else {
+            var mountPoint: String?
+            var openedProtonPass = false
+
+            if let passphrase = VaultCredentialStore.retrieveWithBiometrics() {
+                Log.status("Touch ID accepted — mounting vault without Proton Pass...")
+                mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: passphrase)
+
+                if mountPoint == nil {
+                    Log.status("Keychain mount failed — falling back to Proton Pass...")
+                }
+            }
+
+            if mountPoint == nil {
+                openedProtonPass = ProtonPassApp.openWhenZenIsNotRunning()
+                mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: nil)
+            }
+
+            if let mountPoint {
+                guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: openedProtonPass) else {
                     Log.error("Failed to handle secure profile workflow")
                     exit(1)
                 }
@@ -792,4 +979,8 @@ enum ProfileLauncher {
     }
 }
 
-ProfileLauncher.run()
+if CommandLine.arguments.contains("--store-vault-password") {
+    VaultCredentialSetup.run()
+} else {
+    ProfileLauncher.run()
+}
