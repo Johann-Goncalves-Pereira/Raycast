@@ -2,13 +2,13 @@
 
 // Required parameters:
 // @raycast.schemaVersion 1
-// @raycast.title პროფილი
+// @raycast.title Open Developer
 // @raycast.mode silent
 
 // Optional parameters:
 
 // Documentation:
-// @raycast.description პროფილი
+// @raycast.description Open the Developer folder on terminal
 // @raycast.author Johann-Goncalves-Pereira
 // @raycast.authorURL https://raycast.com/Johann-Goncalves-Pereira
 // @raycast.packageName Utilities
@@ -20,11 +20,9 @@ import Security
 
 enum Paths {
     static let encryptedVault = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
-    static let protonPassApp = "/Applications/Proton Pass.app"
     static let zenApp = "/Applications/Zen.app"
     static let secureVolumeRoot = "/Volumes/.com.apple.zen.framework"
     static let secureProfile = secureVolumeRoot
-    static let personalProfile = "~/Library/Application Support/zen/Profiles/zi76byi5.Pesonal"
     static let zenHostCache = "~/Library/Caches/app.zen-browser.zen"
     static let zenProfilesIni = "~/Library/Application Support/zen/profiles.ini"
 }
@@ -210,11 +208,7 @@ enum DiskImage {
             }
 
             guard exitCode == 0 else {
-                return resolveMountFailure(
-                    output: output,
-                    exitCode: exitCode,
-                    interactiveMount: passphrase == nil
-                )
+                return resolveMountFailure(output: output, exitCode: exitCode)
             }
 
             if FileSystem.exists(at: Paths.secureVolumeRoot) {
@@ -325,16 +319,12 @@ enum DiskImage {
 
     private static func resolveMountFailure(
         output: String,
-        exitCode: Int32,
-        interactiveMount: Bool
+        exitCode: Int32
     ) -> String? {
         Log.error("Error mounting DMG. hdiutil exited with status \(exitCode).")
 
         if isAuthenticationFailure(output) {
             Log.error("Mounting failed due to password prompt cancellation or incorrect password.")
-            if interactiveMount {
-                Log.status("Will proceed with personal profile instead.")
-            }
             return nil
         }
 
@@ -460,6 +450,8 @@ enum VaultCredentialStore {
         AppKitEventLoop.activate()
 
         let context = LAContext()
+        context.localizedFallbackTitle = ""
+
         var biometryError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &biometryError) else {
             return false
@@ -623,56 +615,6 @@ enum ZenApp {
     }
 }
 
-enum ProtonPassApp {
-    /// Returns `true` only when Proton Pass was actually launched.
-    static func openWhenZenIsNotRunning() -> Bool {
-        if ZenApp.isRunning {
-            Log.status("Zen is already running, skipping Proton Pass launch")
-            return false
-        }
-
-        guard FileSystem.exists(at: Paths.protonPassApp) else {
-            Log.error("Proton Pass not found at '\(Paths.protonPassApp)'")
-            return false
-        }
-
-        Log.status("Opening Proton Pass...")
-
-        do {
-            try ProcessRunner.run(executable: SystemPaths.open, arguments: [Paths.protonPassApp])
-            Log.success("Proton Pass opened successfully")
-            return true
-        } catch {
-            Log.error("Failed to open Proton Pass: \(error)")
-            return false
-        }
-    }
-
-    static func terminate() -> Bool {
-        do {
-            let (exitCode, _) = try ProcessRunner.capture(
-                executable: SystemPaths.pkill,
-                arguments: ["-f", "Proton Pass"]
-            )
-
-            switch exitCode {
-            case 0:
-                Log.success("Proton Pass process killed successfully")
-                return true
-            case 1:
-                Log.status("Proton Pass is not running")
-                return true
-            default:
-                Log.error("Failed to kill Proton Pass process")
-                return false
-            }
-        } catch {
-            Log.error("Error killing Proton Pass process: \(error)")
-            return false
-        }
-    }
-}
-
 enum SecureSessionEnd {
     case userQuitZen
     case systemLockOrSleep
@@ -788,8 +730,7 @@ enum ZenBrowserLauncher {
 
     static func launch(
         profilePath: String?,
-        session: Session,
-        terminateProtonPassAfterLaunch: Bool
+        session: Session
     ) -> Bool {
         guard FileSystem.exists(at: Paths.zenApp) else {
             Log.error("Zen Browser application not found at '\(Paths.zenApp)'.")
@@ -816,14 +757,6 @@ enum ZenBrowserLauncher {
                 executable: SystemPaths.open,
                 arguments: arguments
             )
-
-            if terminateProtonPassAfterLaunch {
-                if !ProtonPassApp.terminate() {
-                    Log.error("Failed to kill Proton Pass process")
-                }
-            } else {
-                Log.status("Skipping Proton Pass termination as requested")
-            }
 
             switch session {
             case .monitoredSecureVault:
@@ -860,7 +793,7 @@ enum ZenBrowserLauncher {
 }
 
 enum SecureVaultWorkflow {
-    static func run(at mountPoint: String, terminateProtonPassAfterLaunch: Bool) -> Bool {
+    static func run(at mountPoint: String) -> Bool {
         Log.success("Profile successfully decrypted. Opening Zen Browser with secure profile...")
 
         let zenLaunched: Bool
@@ -869,16 +802,14 @@ enum SecureVaultWorkflow {
             Log.status("Secure profile found at: \(Paths.secureProfile)")
             zenLaunched = ZenBrowserLauncher.launch(
                 profilePath: Paths.secureProfile,
-                session: .monitoredSecureVault,
-                terminateProtonPassAfterLaunch: terminateProtonPassAfterLaunch
+                session: .monitoredSecureVault
             )
         } else {
             Log.error("Secure profile not found at '\(Paths.secureProfile)'")
             Log.status("Opening Zen Browser without specific profile...")
             zenLaunched = ZenBrowserLauncher.launch(
                 profilePath: nil,
-                session: .monitoredSecureVault,
-                terminateProtonPassAfterLaunch: terminateProtonPassAfterLaunch
+                session: .monitoredSecureVault
             )
         }
 
@@ -893,31 +824,6 @@ enum SecureVaultWorkflow {
         }
 
         return zenLaunched
-    }
-}
-
-enum PersonalProfileWorkflow {
-    static func run() -> Bool {
-        Log.status("DMG was not mounted or password was incorrect. Opening Zen Browser with personal profile...")
-
-        let personalProfilePath = FileSystem.expandingTilde(in: Paths.personalProfile)
-        Log.status("Using personal profile at: \(personalProfilePath)")
-
-        if FileSystem.exists(at: personalProfilePath) {
-            Log.status("Opening Zen Browser with personal profile...")
-            return ZenBrowserLauncher.launch(
-                profilePath: personalProfilePath,
-                session: .immediate,
-                terminateProtonPassAfterLaunch: false
-            )
-        }
-
-        Log.status("Personal profile not found. Opening Zen Browser with default profile...")
-        return ZenBrowserLauncher.launch(
-            profilePath: nil,
-            session: .immediate,
-            terminateProtonPassAfterLaunch: false
-        )
     }
 }
 
@@ -936,42 +842,29 @@ enum ProfileLauncher {
         let (isMounted, mountPoint) = DiskImage.mountStatus(for: Paths.encryptedVault)
 
         if isMounted, let mountPoint {
-            Log.status("Secure vault is already mounted at \(mountPoint). Skipping Proton Pass and proceeding directly...")
+            Log.status("Secure vault is already mounted at \(mountPoint). Proceeding directly...")
 
-            guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: false) else {
+            guard SecureVaultWorkflow.run(at: mountPoint) else {
                 Log.error("Failed to handle secure profile workflow")
                 exit(1)
             }
         } else {
             AppKitEventLoop.activate()
 
-            var mountPoint: String?
-            var openedProtonPass = false
-
-            if let passphrase = VaultCredentialStore.retrieveWithBiometrics() {
-                Log.status("Touch ID accepted — mounting vault without Proton Pass...")
-                mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: passphrase)
-
-                if mountPoint == nil {
-                    Log.status("Keychain mount failed — falling back to Proton Pass...")
-                }
+            guard let passphrase = VaultCredentialStore.retrieveWithBiometrics() else {
+                Log.status("Touch ID cancelled — aborting")
+                exit(0)
             }
 
-            if mountPoint == nil {
-                openedProtonPass = ProtonPassApp.openWhenZenIsNotRunning()
-                mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: nil)
+            Log.status("Touch ID accepted — mounting vault...")
+            guard let mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: passphrase) else {
+                Log.error("Failed to mount vault")
+                exit(1)
             }
 
-            if let mountPoint {
-                guard SecureVaultWorkflow.run(at: mountPoint, terminateProtonPassAfterLaunch: openedProtonPass) else {
-                    Log.error("Failed to handle secure profile workflow")
-                    exit(1)
-                }
-            } else {
-                guard PersonalProfileWorkflow.run() else {
-                    Log.error("Failed to handle personal profile workflow")
-                    exit(1)
-                }
+            guard SecureVaultWorkflow.run(at: mountPoint) else {
+                Log.error("Failed to handle secure profile workflow")
+                exit(1)
             }
         }
 
