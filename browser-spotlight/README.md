@@ -88,6 +88,45 @@ While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **
 - Search engine + typeahead suggestions
 - **Excluded browsers** — checkboxes; excluded apps keep native ⌘P (Print). Run **Apply Browser Exclusions** after changing them.
 
+## Site search (Chrome / Arc style)
+
+When a Chromium-based browser is frontmost, Browser Spotlight reads your **active site-search shortcuts** and built-in search engines from that browser’s profile (`Web Data` → `keywords` table). This is the same list you manage in the browser under **Settings → Search engines and site search**.
+
+### How to use
+
+1. Open Browser Spotlight (**⌘P** when a supported browser is focused).
+2. Type a site-search keyword from your browser — for example `youtube.com`, `g`, or `amazon`.
+3. Press **Tab** to scope search to that engine (the row shows the shortcut and a **Tab** hint).
+4. Type your query and press **Enter** to search on that site.
+
+Scoped mode shows a red engine badge (like Arc Spotlight). Press **⌫** on an empty query to exit scoped search.
+
+### What gets loaded
+
+- **Included:** active site-search entries (`is_active = 1`) and built-in/prepopulated engines (Google, Bing, DuckDuckGo, etc.).
+- **Excluded:** inactive OpenSearch discoveries (Chrome’s “Inactive shortcuts”), and internal browser shortcuts such as `@bookmarks`, `@history`, and `@tabs`.
+- **Safari / Orion:** no Chromium keyword database — a small built-in fallback list (YouTube, GitHub, Google) is used instead.
+
+### Examples (from your browser config)
+
+| You type | Tab scopes to |
+| --- | --- |
+| `youtube.com` or `you` | YouTube |
+| `g` | Gemini (if configured in Arc/Chrome) |
+| `amazon` | Amazon |
+| `github` | GitHub |
+
+Shortcuts match what you configured — Arc users with `youtube.com` and `g` for Gemini will see those exact triggers.
+
+## Development
+
+```bash
+npm install
+npm run dev      # run in Raycast
+npm run test     # unit tests (URL expansion, keyword matching, Web Data parsing)
+npm run build
+```
+
 ## Scope
 
 Supported: Chrome, Safari, Arc, Helium, Brave, Edge, Vivaldi, Opera, Orion, Chromium (+ Canary/Dev/STP/Dia).  

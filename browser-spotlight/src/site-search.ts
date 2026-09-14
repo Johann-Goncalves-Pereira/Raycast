@@ -1,63 +1,108 @@
 import { Tab, domainFromUrl } from "./classify";
+import { expandSearchUrl, getBrowserSearchEngines } from "./browser-engines";
+import { BrowserDefinition } from "./browser-catalog";
 
 export type SiteEngine = {
   id: string;
   name: string;
+  /** Omnibox / site-search shortcuts (e.g. youtube.com, yt, g). */
+  keywords: string[];
   domains: string[];
   buildUrl: (query: string) => string;
+  color?: string;
 };
 
-export const SITE_ENGINES: SiteEngine[] = [
+/** Small fallback when the browser has no readable keyword DB (e.g. Safari). */
+export const FALLBACK_SITE_ENGINES: SiteEngine[] = [
   {
     id: "youtube",
     name: "YouTube",
-    domains: ["youtube.com", "youtu.be", "m.youtube.com"],
+    keywords: ["yt", "you", "youtube", "youtube.com"],
+    domains: ["youtube.com", "youtu.be"],
+    color: "#FF0000",
     buildUrl: (q) =>
       `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
   },
   {
     id: "github",
     name: "GitHub",
+    keywords: ["gh", "github", "github.com"],
     domains: ["github.com"],
     buildUrl: (q) => `https://github.com/search?q=${encodeURIComponent(q)}`,
   },
   {
     id: "google",
     name: "Google",
-    domains: ["google.com", "www.google.com"],
+    keywords: ["g", "google", "google.com"],
+    domains: ["google.com"],
     buildUrl: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
-  },
-  {
-    id: "reddit",
-    name: "Reddit",
-    domains: ["reddit.com", "www.reddit.com"],
-    buildUrl: (q) =>
-      `https://www.reddit.com/search/?q=${encodeURIComponent(q)}`,
-  },
-  {
-    id: "wikipedia",
-    name: "Wikipedia",
-    domains: ["wikipedia.org", "en.wikipedia.org"],
-    buildUrl: (q) =>
-      `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(q)}`,
-  },
-  {
-    id: "amazon",
-    name: "Amazon",
-    domains: ["amazon.com", "www.amazon.com", "amazon.com.br", "amazon.co.uk"],
-    buildUrl: (q) => `https://www.amazon.com/s?k=${encodeURIComponent(q)}`,
-  },
-  {
-    id: "x",
-    name: "X",
-    domains: ["x.com", "twitter.com"],
-    buildUrl: (q) => `https://x.com/search?q=${encodeURIComponent(q)}`,
   },
 ];
 
-export function findSiteEngineByDomain(domain: string): SiteEngine | undefined {
+export function loadSiteEngines(
+  browser: BrowserDefinition | null,
+): SiteEngine[] {
+  if (!browser) return FALLBACK_SITE_ENGINES;
+  const fromBrowser = getBrowserSearchEngines(browser).map((engine) => ({
+    id: engine.id,
+    name: engine.name,
+    keywords: engine.keywords,
+    domains: engine.domains,
+    buildUrl: (q: string) => expandSearchUrl(engine.urlTemplate, q),
+  }));
+  return fromBrowser.length > 0 ? fromBrowser : FALLBACK_SITE_ENGINES;
+}
+
+function engineAliases(engine: SiteEngine): string[] {
+  return [
+    engine.id.toLowerCase(),
+    engine.name.toLowerCase(),
+    ...engine.keywords.map((k) => k.toLowerCase()),
+    ...engine.domains.map((d) => d.replace(/^www\./, "").toLowerCase()),
+  ];
+}
+
+/**
+ * Chrome/Arc omnibox behavior: a single token that uniquely identifies a
+ * site/search engine (exact keyword, or unique prefix) → Tab scopes to it.
+ */
+export function resolveEngineKeyword(
+  query: string,
+  engines: SiteEngine[],
+): SiteEngine | null {
+  const q = query.trim().toLowerCase();
+  if (!q || /\s/.test(q)) return null;
+
+  const exact = engines.find((engine) =>
+    engineAliases(engine).some((alias) => alias === q),
+  );
+  if (exact) return exact;
+
+  const prefixMatches = engines.filter((engine) =>
+    engineAliases(engine).some((alias) => alias.startsWith(q)),
+  );
+  if (prefixMatches.length === 1) return prefixMatches[0];
+
+  if (prefixMatches.length > 1) {
+    const scored = prefixMatches
+      .map((engine) => {
+        const aliases = engineAliases(engine).filter((a) => a.startsWith(q));
+        const best = Math.min(...aliases.map((a) => a.length));
+        return { engine, best };
+      })
+      .sort((a, b) => a.best - b.best);
+    if (scored[0].best < scored[1].best) return scored[0].engine;
+  }
+
+  return null;
+}
+
+export function findSiteEngineByDomain(
+  domain: string,
+  engines: SiteEngine[],
+): SiteEngine | undefined {
   const normalized = domain.replace(/^www\./, "").toLowerCase();
-  return SITE_ENGINES.find(
+  return engines.find(
     (engine) =>
       engine.domains.some(
         (d) => normalized === d || normalized.endsWith(`.${d}`),
@@ -65,14 +110,18 @@ export function findSiteEngineByDomain(domain: string): SiteEngine | undefined {
   );
 }
 
-export function siteEngineFromTab(tab: Tab): SiteEngine {
-  const known = findSiteEngineByDomain(tab.domain);
+export function siteEngineFromTab(
+  tab: Tab,
+  engines: SiteEngine[] = [],
+): SiteEngine {
+  const known = findSiteEngineByDomain(tab.domain, engines);
   if (known) return known;
 
   const domain = tab.domain || domainFromUrl(tab.url);
   return {
     id: `site-${domain}`,
     name: domain || "Site",
+    keywords: [domain],
     domains: [domain],
     buildUrl: (q) => {
       try {
@@ -85,15 +134,24 @@ export function siteEngineFromTab(tab: Tab): SiteEngine {
   };
 }
 
-export function matchingSiteEngines(query: string, tabs: Tab[]): SiteEngine[] {
+export function matchingSiteEngines(
+  query: string,
+  engines: SiteEngine[],
+  tabs: Tab[],
+): SiteEngine[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
 
-  const fromCatalog = SITE_ENGINES.filter(
+  const keyword = resolveEngineKeyword(query, engines);
+
+  const fromCatalog = engines.filter(
     (engine) =>
       engine.name.toLowerCase().includes(q) ||
       engine.domains.some((d) => d.includes(q)) ||
-      engine.id.includes(q),
+      engine.id.toLowerCase().includes(q) ||
+      engine.keywords.some(
+        (k) => k.toLowerCase().includes(q) || q.startsWith(k.toLowerCase()),
+      ),
   );
 
   const fromTabs: SiteEngine[] = [];
@@ -103,7 +161,7 @@ export function matchingSiteEngines(query: string, tabs: Tab[]): SiteEngine[] {
       !tab.title.toLowerCase().includes(q)
     )
       continue;
-    const engine = siteEngineFromTab(tab);
+    const engine = siteEngineFromTab(tab, engines);
     if (
       !fromCatalog.some((e) => e.id === engine.id) &&
       !fromTabs.some((e) => e.id === engine.id)
@@ -112,7 +170,11 @@ export function matchingSiteEngines(query: string, tabs: Tab[]): SiteEngine[] {
     }
   }
 
-  return [...fromCatalog, ...fromTabs].slice(0, 8);
+  const merged = [...fromCatalog, ...fromTabs];
+  if (keyword) {
+    return [keyword, ...merged.filter((e) => e.id !== keyword.id)].slice(0, 12);
+  }
+  return merged.slice(0, 12);
 }
 
 export async function fetchDuckDuckGoSuggestions(
@@ -125,7 +187,6 @@ export async function fetchDuckDuckGoSuggestions(
     );
     if (!response.ok) return [];
     const data = (await response.json()) as unknown;
-    // format: [query, [suggestions...]] or [{phrase: "..."}]
     if (Array.isArray(data)) {
       if (Array.isArray(data[1])) {
         return (data[1] as unknown[])
@@ -166,4 +227,12 @@ export async function fetchYouTubeSuggestions(
   } catch {
     return [];
   }
+}
+
+export function isYouTubeEngine(engine: SiteEngine): boolean {
+  return (
+    engine.domains.some((d) => d.includes("youtube")) ||
+    engine.keywords.some((k) => k.includes("youtube") || k === "yt") ||
+    engine.name.toLowerCase().includes("youtube")
+  );
 }

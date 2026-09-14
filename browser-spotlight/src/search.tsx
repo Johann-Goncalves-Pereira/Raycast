@@ -27,7 +27,10 @@ import {
   SiteEngine,
   fetchDuckDuckGoSuggestions,
   fetchYouTubeSuggestions,
+  isYouTubeEngine,
+  loadSiteEngines,
   matchingSiteEngines,
+  resolveEngineKeyword,
   siteEngineFromTab,
 } from "./site-search";
 import { getTabsForBrowser, jumpToTab } from "./tabs";
@@ -57,7 +60,6 @@ export default function Command() {
   });
 
   useEffect(() => {
-    // Keep Karabiner allowlist roughly in sync when Spotlight opens successfully
     if (!context?.allowed) return;
     try {
       applyExclusionsToKarabiner(prefs);
@@ -65,6 +67,11 @@ export default function Command() {
       // Non-fatal if Karabiner config is missing / locked
     }
   }, [context?.allowed]);
+
+  const siteEngines = useMemo(
+    () => loadSiteEngines(context?.browser ?? null),
+    [context?.browser],
+  );
 
   const { data: tabs = [], isLoading: isLoadingTabs } = usePromise(
     async (appName: string, bundleId: string) => {
@@ -95,13 +102,16 @@ export default function Command() {
 
   const { data: suggestions = [], isLoading: isLoadingSuggestions } =
     usePromise(
-      async (query: string, scopedId: string | null) => {
+      async (query: string, scopedId: string | null, youtube: boolean) => {
         if (!suggestionsEnabled || !query.trim()) return [] as string[];
-        if (scopedId === "youtube") return fetchYouTubeSuggestions(query);
-        if (scopedSite) return fetchDuckDuckGoSuggestions(query);
+        if (youtube) return fetchYouTubeSuggestions(query);
         return fetchDuckDuckGoSuggestions(query);
       },
-      [scopedSite ? searchText : "", scopedSite?.id ?? null],
+      [
+        scopedSite ? searchText : "",
+        scopedSite?.id ?? null,
+        scopedSite ? isYouTubeEngine(scopedSite) : false,
+      ],
       { execute: Boolean(scopedSite) && suggestionsEnabled },
     );
 
@@ -161,10 +171,15 @@ export default function Command() {
       .slice(0, 8);
   }, [extensions, fuseExtensions, searchText]);
 
+  const keywordEngine = useMemo(() => {
+    if (scopedSite || !searchText.trim()) return null;
+    return resolveEngineKeyword(searchText, siteEngines);
+  }, [scopedSite, searchText, siteEngines]);
+
   const siteMatches = useMemo(() => {
     if (scopedSite || !searchText.trim()) return [] as SiteEngine[];
-    return matchingSiteEngines(searchText, tabs);
-  }, [scopedSite, searchText, tabs]);
+    return matchingSiteEngines(searchText, siteEngines, tabs);
+  }, [scopedSite, searchText, siteEngines, tabs]);
 
   const isLoading =
     isLoadingContext ||
@@ -209,11 +224,18 @@ export default function Command() {
     await popToRoot();
   }
 
+  function enterSiteSearch(site: SiteEngine) {
+    setScopedSite(site);
+    setSearchText("");
+  }
+
   const placeholder = scopedSite
     ? `Search ${scopedSite.name}…`
-    : browser
-      ? `Search ${browser.name} tabs, web, sites…`
-      : "Search…";
+    : keywordEngine
+      ? `${keywordEngine.name} — press Tab to search`
+      : browser
+        ? `Search ${browser.name} tabs, web, sites…`
+        : "Search…";
 
   const classified = classifyInput(searchText);
   const primaryTitle = !searchText.trim()
@@ -224,9 +246,18 @@ export default function Command() {
         ? `Search ${scopedSite.name} for “${searchText.trim()}”`
         : `Search “${searchText.trim()}”`;
 
+  // When the typed token is a browser search-engine keyword, focus that row so
+  // Tab enters scoped search (Chrome/Arc omnibox). Otherwise prefer first tab.
+  const preferredItemId = scopedSite
+    ? undefined
+    : keywordEngine
+      ? `site-${keywordEngine.id}`
+      : filteredTabs[0]
+        ? `tab-${filteredTabs[0].windowId}-${filteredTabs[0].tabId}-${filteredTabs[0].url}`
+        : undefined;
+
   function handleSearchTextChange(next: string) {
     if (scopedSite && searchText.length > 0 && next.length === 0) {
-      // Clear query inside scoped mode first
       setSearchText("");
       return;
     }
@@ -236,10 +267,11 @@ export default function Command() {
     setSearchText(next);
   }
 
-  // Backspace on empty scoped query: leave scoped mode via Action or detecting delete
-  useEffect(() => {
-    // no-op placeholder — handled via Action "Exit Site Search"
-  }, []);
+  const engineBadgeColor = scopedSite
+    ? Color.Red
+    : keywordEngine
+      ? Color.Orange
+      : Color.SecondaryText;
 
   return (
     <List
@@ -249,6 +281,7 @@ export default function Command() {
       onSearchTextChange={handleSearchTextChange}
       filtering={false}
       throttle
+      selectedItemId={preferredItemId}
     >
       {scopedSite ? (
         <>
@@ -257,7 +290,14 @@ export default function Command() {
               <List.Item
                 title={primaryTitle}
                 icon={{ source: Icon.MagnifyingGlass, tintColor: Color.Red }}
-                accessories={[{ text: scopedSite.name }]}
+                accessories={[
+                  {
+                    tag: {
+                      value: scopedSite.name,
+                      color: Color.Red,
+                    },
+                  },
+                ]}
                 actions={
                   <ActionPanel>
                     <Action
@@ -293,7 +333,18 @@ export default function Command() {
                   <List.Item
                     key={`sug-${suggestion}`}
                     title={suggestion}
-                    icon={Icon.Text}
+                    icon={{
+                      source: Icon.MagnifyingGlass,
+                      tintColor: Color.Red,
+                    }}
+                    accessories={[
+                      {
+                        tag: {
+                          value: scopedSite.name,
+                          color: Color.Red,
+                        },
+                      },
+                    ]}
                     actions={
                       <ActionPanel>
                         <Action
@@ -327,6 +378,14 @@ export default function Command() {
                 title={`Search ${scopedSite.name}…`}
                 subtitle="Type a query, or press ⌫ to exit"
                 icon={{ source: Icon.MagnifyingGlass, tintColor: Color.Red }}
+                accessories={[
+                  {
+                    tag: {
+                      value: scopedSite.name,
+                      color: Color.Red,
+                    },
+                  },
+                ]}
                 actions={
                   <ActionPanel>
                     <Action
@@ -346,6 +405,110 @@ export default function Command() {
         </>
       ) : (
         <>
+          {/* Keyword match first — Tab scopes like Chrome/Arc omnibox */}
+          {siteMatches.length > 0 && (
+            <List.Section
+              title="Search Site"
+              subtitle={
+                keywordEngine
+                  ? `Tab → ${keywordEngine.name}`
+                  : `${siteMatches.length}`
+              }
+            >
+              {siteMatches.map((site) => (
+                <List.Item
+                  key={site.id}
+                  id={`site-${site.id}`}
+                  title={`Search ${site.name}`}
+                  subtitle={
+                    keywordEngine?.id === site.id
+                      ? "Press Tab to scope search"
+                      : searchText.trim()
+                        ? `for “${searchText.trim()}”`
+                        : undefined
+                  }
+                  icon={{
+                    source: Icon.MagnifyingGlass,
+                    tintColor:
+                      keywordEngine?.id === site.id
+                        ? engineBadgeColor
+                        : undefined,
+                  }}
+                  accessories={[
+                    {
+                      tag: {
+                        value: site.keywords[0] ?? site.name,
+                        color:
+                          keywordEngine?.id === site.id
+                            ? Color.Red
+                            : Color.SecondaryText,
+                      },
+                    },
+                    { text: "Tab", icon: Icon.ArrowRight },
+                  ]}
+                  actions={
+                    <ActionPanel>
+                      <Action
+                        title={`Enter ${site.name} Search`}
+                        icon={Icon.ArrowRight}
+                        shortcut={{ modifiers: [], key: "tab" }}
+                        onAction={() => enterSiteSearch(site)}
+                      />
+                      <Action
+                        title={
+                          searchText.trim() && keywordEngine?.id !== site.id
+                            ? `Search ${site.name}`
+                            : `Search ${site.name}…`
+                        }
+                        icon={Icon.MagnifyingGlass}
+                        onAction={() => {
+                          if (
+                            searchText.trim() &&
+                            keywordEngine?.id !== site.id &&
+                            app
+                          ) {
+                            runAndClose(async () => {
+                              await openInBrowser(
+                                app,
+                                site.buildUrl(searchText.trim()),
+                              );
+                            });
+                          } else {
+                            enterSiteSearch(site);
+                          }
+                        }}
+                      />
+                    </ActionPanel>
+                  }
+                />
+              ))}
+            </List.Section>
+          )}
+
+          {filteredTabs.length > 0 && (
+            <List.Section
+              title={searchText.trim() ? "Tabs" : "Open Tabs"}
+              subtitle={`${filteredTabs.length}`}
+            >
+              {filteredTabs.map((tab) => (
+                <TabItem
+                  key={`${tab.windowId}-${tab.tabId}-${tab.url}`}
+                  tab={tab}
+                  app={app!}
+                  browser={browser!}
+                  engines={siteEngines}
+                  keywordEngine={keywordEngine}
+                  onJump={() =>
+                    runAndClose(async () => {
+                      await jumpToTab(app!, browser!, tab);
+                    })
+                  }
+                  onScope={(site) => enterSiteSearch(site)}
+                />
+              ))}
+            </List.Section>
+          )}
+
           {primaryTitle && app && browser && (
             <List.Section title="Web">
               <List.Item
@@ -383,79 +546,6 @@ export default function Command() {
                             await openQueryInBrowser(app, suggestion);
                           })
                         }
-                      />
-                    </ActionPanel>
-                  }
-                />
-              ))}
-            </List.Section>
-          )}
-
-          <List.Section
-            title={searchText.trim() ? "Tabs" : "Open Tabs"}
-            subtitle={`${filteredTabs.length}`}
-          >
-            {filteredTabs.map((tab) => (
-              <TabItem
-                key={`${tab.windowId}-${tab.tabId}-${tab.url}`}
-                tab={tab}
-                app={app!}
-                browser={browser!}
-                onJump={() =>
-                  runAndClose(async () => {
-                    await jumpToTab(app!, browser!, tab);
-                  })
-                }
-                onScope={() => {
-                  setScopedSite(siteEngineFromTab(tab));
-                  setSearchText("");
-                }}
-              />
-            ))}
-          </List.Section>
-
-          {siteMatches.length > 0 && (
-            <List.Section title="Search Site">
-              {siteMatches.map((site) => (
-                <List.Item
-                  key={site.id}
-                  title={`Search ${site.name}`}
-                  subtitle={
-                    searchText.trim() ? `for “${searchText.trim()}”` : undefined
-                  }
-                  icon={Icon.Link}
-                  accessories={[{ text: "Tab →", icon: Icon.ArrowRight }]}
-                  actions={
-                    <ActionPanel>
-                      <Action
-                        title={
-                          searchText.trim()
-                            ? `Search ${site.name}`
-                            : `Search ${site.name}…`
-                        }
-                        icon={Icon.MagnifyingGlass}
-                        onAction={() => {
-                          if (searchText.trim() && app) {
-                            runAndClose(async () => {
-                              await openInBrowser(
-                                app,
-                                site.buildUrl(searchText.trim()),
-                              );
-                            });
-                          } else {
-                            setScopedSite(site);
-                            setSearchText("");
-                          }
-                        }}
-                      />
-                      <Action
-                        title={`Enter ${site.name} Search`}
-                        icon={Icon.ArrowRight}
-                        shortcut={{ modifiers: [], key: "tab" }}
-                        onAction={() => {
-                          setScopedSite(site);
-                          setSearchText("");
-                        }}
                       />
                     </ActionPanel>
                   }
@@ -521,12 +611,17 @@ function TabItem(props: {
   tab: Tab;
   app: Application;
   browser: BrowserDefinition;
+  engines: SiteEngine[];
+  keywordEngine: SiteEngine | null;
   onJump: () => void;
-  onScope: () => void;
+  onScope: (site: SiteEngine) => void;
 }) {
-  const { tab, onJump, onScope } = props;
+  const { tab, engines, keywordEngine, onJump, onScope } = props;
+  const tabSite = siteEngineFromTab(tab, engines);
+
   return (
     <List.Item
+      id={`tab-${tab.windowId}-${tab.tabId}-${tab.url}`}
       title={tab.title}
       subtitle={tab.domain}
       icon={Icon.Link}
@@ -542,10 +637,10 @@ function TabItem(props: {
             onAction={onJump}
           />
           <Action
-            title={`Search ${siteEngineFromTab(tab).name}`}
+            title={`Search ${keywordEngine?.name ?? tabSite.name}`}
             icon={Icon.MagnifyingGlass}
             shortcut={{ modifiers: [], key: "tab" }}
-            onAction={onScope}
+            onAction={() => onScope(keywordEngine ?? tabSite)}
           />
           <Action.CopyToClipboard title="Copy URL" content={tab.url} />
         </ActionPanel>

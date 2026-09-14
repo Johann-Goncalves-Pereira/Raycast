@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, existsSync, statSync } from "fs";
+import { readdirSync, readFileSync, existsSync } from "fs";
 import { join, isAbsolute } from "path";
 import { BrowserDefinition, profileRootFor } from "./browsers";
+import { listProfileDirs } from "./profile";
 
 export type BrowserExtension = {
   id: string;
@@ -9,21 +10,6 @@ export type BrowserExtension = {
   optionsUrl?: string;
   detailsUrl: string;
 };
-
-function listProfileDirs(root: string): string[] {
-  if (!existsSync(root)) return [];
-  const entries = readdirSync(root);
-  return entries
-    .filter((name) => name === "Default" || /^Profile \d+$/i.test(name))
-    .map((name) => join(root, name))
-    .filter((path) => {
-      try {
-        return statSync(path).isDirectory();
-      } catch {
-        return false;
-      }
-    });
-}
 
 function readJsonLoose(path: string): Record<string, unknown> | undefined {
   try {
