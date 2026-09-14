@@ -1,0 +1,50 @@
+{
+  "title": "Browser Spotlight — Cmd+P in browsers",
+  "rules": [
+    {
+      "description": "Cmd+P → Browser Spotlight when browser frontmost",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "p",
+            "modifiers": {
+              "mandatory": [
+                "command"
+              ],
+              "optional": [
+                "caps_lock"
+              ]
+            }
+          },
+          "to": [
+            {
+              "shell_command": "open 'raycast://extensions/johann_goncalves_pereira/browser-spotlight/search'"
+            }
+          ],
+          "conditions": [
+            {
+              "type": "frontmost_application_if",
+              "bundle_identifiers": [
+                "^com\\.google\\.Chrome$",
+                "^com\\.google\\.Chrome\\.canary$",
+                "^com\\.google\\.Chrome\\.dev$",
+                "^com\\.apple\\.Safari$",
+                "^com\\.apple\\.SafariTechnologyPreview$",
+                "^company\\.thebrowser\\.Browser$",
+                "^company\\.thebrowser\\.dia$",
+                "^net\\.imput\\.helium$",
+                "^com\\.brave\\.Browser$",
+                "^com\\.microsoft\\.edgemac$",
+                "^com\\.vivaldi\\.Vivaldi$",
+                "^com\\.operasoftware\\.Opera$",
+                "^com\\.kagi\\.kagimacOS$",
+                "^org\\.chromium\\.Chromium$"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
