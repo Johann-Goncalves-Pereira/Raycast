@@ -1,0 +1,204 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "browser-spotlight",
+  "title": "Browser Spotlight",
+  "description": "Arc-style Command Bar for the frontmost Chromium/WebKit browser: jump to open tabs, search the web, site-scoped search, and extensions.",
+  "icon": "spotlight-icon.png",
+  "author": "johann_goncalves_pereira",
+  "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
+  "categories": [
+    "Web",
+    "Productivity",
+    "Applications"
+  ],
+  "commands": [
+    {
+      "name": "search",
+      "title": "Browser Spotlight",
+      "description": "Search open tabs, the web, sites, and extensions in the frontmost browser.",
+      "mode": "view"
+    },
+    {
+      "name": "apply-exclusions",
+      "title": "Apply Browser Exclusions",
+      "description": "Rewrite the Karabiner Cmd+P allowlist from your excluded-browser preferences.",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "searchEngine",
+      "title": "Search Engine",
+      "description": "Default search engine when opening a new search tab.",
+      "type": "dropdown",
+      "required": false,
+      "default": "google",
+      "data": [
+        {
+          "title": "Google",
+          "value": "google"
+        },
+        {
+          "title": "DuckDuckGo",
+          "value": "duckduckgo"
+        },
+        {
+          "title": "Bing",
+          "value": "bing"
+        }
+      ]
+    },
+    {
+      "name": "enableSuggestions",
+      "title": "Suggestions",
+      "label": "Fetch typeahead suggestions",
+      "description": "When enabled, show DuckDuckGo / YouTube autocomplete suggestions.",
+      "type": "checkbox",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "exclude_com.google.Chrome",
+      "title": "Excluded Browsers",
+      "label": "Google Chrome",
+      "description": "Exclude Google Chrome from Cmd+P Browser Spotlight (keeps native Print).",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.google.Chrome.canary",
+      "label": "Chrome Canary",
+      "description": "Exclude Chrome Canary from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.google.Chrome.dev",
+      "label": "Chrome Dev",
+      "description": "Exclude Chrome Dev from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.apple.Safari",
+      "label": "Safari",
+      "description": "Exclude Safari from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.apple.SafariTechnologyPreview",
+      "label": "Safari Technology Preview",
+      "description": "Exclude Safari Technology Preview from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_company.thebrowser.Browser",
+      "label": "Arc",
+      "description": "Exclude Arc from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_company.thebrowser.dia",
+      "label": "Dia",
+      "description": "Exclude Dia from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_net.imput.helium",
+      "label": "Helium",
+      "description": "Exclude Helium from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.brave.Browser",
+      "label": "Brave",
+      "description": "Exclude Brave from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.microsoft.edgemac",
+      "label": "Microsoft Edge",
+      "description": "Exclude Microsoft Edge from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.vivaldi.Vivaldi",
+      "label": "Vivaldi",
+      "description": "Exclude Vivaldi from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.operasoftware.Opera",
+      "label": "Opera",
+      "description": "Exclude Opera from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_com.kagi.kagimacOS",
+      "label": "Orion",
+      "description": "Exclude Orion from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "exclude_org.chromium.Chromium",
+      "label": "Chromium",
+      "description": "Exclude Chromium from Cmd+P Browser Spotlight.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.104.23",
+    "@raycast/utils": "^2.2.7",
+    "fuse.js": "^7.1.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.0.4",
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.10",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "apply-karabiner": "node scripts/apply-karabiner.mjs",
+    "fix-karabiner": "node scripts/fix-karabiner.mjs",
+    "reinstall-karabiner": "node scripts/reinstall-karabiner.mjs",
+    "install-cmd-p-hotkey": "node scripts/install-cmd-p-hotkey.mjs",
+    "refresh-icon": "node scripts/refresh-icon.mjs"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true
+  }
+}
