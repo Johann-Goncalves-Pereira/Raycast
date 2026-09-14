@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
-import { BrowserDefinition, profileRootFor } from "./browsers";
+import { BrowserDefinition, profileRootFor } from "./browser-catalog";
 
 export function listProfileDirs(root: string): string[] {
   if (!existsSync(root)) return [];

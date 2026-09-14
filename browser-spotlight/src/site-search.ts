@@ -1,6 +1,6 @@
 import { Tab, domainFromUrl } from "./classify";
 import { expandSearchUrl, getBrowserSearchEngines } from "./browser-engines";
-import { BrowserDefinition } from "./browsers";
+import { BrowserDefinition } from "./browser-catalog";
 
 export type SiteEngine = {
   id: string;

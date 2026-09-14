@@ -2,7 +2,7 @@ import { execFileSync } from "child_process";
 import { copyFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BrowserDefinition } from "./browsers";
+import { BrowserDefinition } from "./browser-catalog";
 import { lastUsedProfileDir } from "./profile";
 
 export type BrowserKeywordEngine = {
@@ -13,7 +13,7 @@ export type BrowserKeywordEngine = {
   urlTemplate: string;
 };
 
-type KeywordRow = {
+export type KeywordRow = {
   id: number;
   short_name: string;
   keyword: string;
@@ -167,7 +167,13 @@ export function getBrowserSearchEngines(
   if (!profileDir) return [];
 
   const webData = join(profileDir, "Web Data");
-  const rows = readKeywordsFromWebData(webData);
+  return mapKeywordRowsToEngines(readKeywordsFromWebData(webData));
+}
+
+/** Map Chromium keywords rows to site/search engines (exported for tests). */
+export function mapKeywordRowsToEngines(
+  rows: KeywordRow[],
+): BrowserKeywordEngine[] {
   const engines: BrowserKeywordEngine[] = [];
   const seenKeywords = new Set<string>();
 
