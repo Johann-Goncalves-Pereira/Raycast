@@ -65,13 +65,21 @@ export default function Command() {
   });
 
   useEffect(() => {
-    if (!context?.allowed) return;
+    if (!context) return;
+
     try {
       applyExclusionsToKarabiner(prefs);
     } catch {
       // Non-fatal if Karabiner config is missing / locked
     }
-  }, [context?.allowed]);
+
+    if (!context.allowed) {
+      void (async () => {
+        await closeMainWindow();
+        await popToRoot();
+      })();
+    }
+  }, [context]);
 
   const siteEngines = useMemo(
     () => loadSiteEngines(context?.browser ?? null),
@@ -269,19 +277,7 @@ export default function Command() {
   }
 
   if (context && !context.allowed) {
-    return (
-      <List>
-        <List.EmptyView
-          icon={Icon.Globe}
-          title="No supported browser frontmost"
-          description={
-            context.frontmost
-              ? `${context.frontmost.name} is not an allowed browser (unsupported or excluded).`
-              : "Focus a Chromium/WebKit browser, then press Cmd+P."
-          }
-        />
-      </List>
-    );
+    return <List isLoading />;
   }
 
   const app = context?.frontmost;

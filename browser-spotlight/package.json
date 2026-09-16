@@ -107,7 +107,7 @@
       "description": "Exclude Arc from Cmd+P Browser Spotlight.",
       "type": "checkbox",
       "required": false,
-      "default": false
+      "default": true
     },
     {
       "name": "exclude_company.thebrowser.dia",

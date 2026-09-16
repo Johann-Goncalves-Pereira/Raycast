@@ -21,6 +21,9 @@ export type ExtensionPreferences = {
   enableSuggestions: boolean;
 } & Record<string, boolean | string>;
 
+/** Browsers that must never get Cmd+P → Spotlight (have their own command bars). */
+const ALWAYS_EXCLUDED_BUNDLE_IDS = new Set(["company.thebrowser.Browser"]);
+
 export function excludePreferenceName(bundleId: string): string {
   return `exclude_${bundleId}`;
 }
@@ -31,7 +34,7 @@ export function getExcludedBundleIds(
   const preferences =
     prefs ??
     (getPreferenceValues<ExtensionPreferences>() as ExtensionPreferences);
-  const excluded = new Set<string>();
+  const excluded = new Set<string>(ALWAYS_EXCLUDED_BUNDLE_IDS);
   for (const browser of BROWSER_CATALOG) {
     const key = excludePreferenceName(browser.bundleId);
     if (preferences[key] === true) {

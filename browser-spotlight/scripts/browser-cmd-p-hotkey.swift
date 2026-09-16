@@ -12,7 +12,6 @@ let browserBundleIds: Set<String> = [
   "com.google.Chrome.dev",
   "com.apple.Safari",
   "com.apple.SafariTechnologyPreview",
-  "company.thebrowser.Browser",
   "company.thebrowser.dia",
   "net.imput.helium",
   "net.imput.helium.helper",

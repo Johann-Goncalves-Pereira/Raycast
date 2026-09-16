@@ -86,7 +86,7 @@ While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **
 ## Preferences
 
 - Search engine + typeahead suggestions
-- **Excluded browsers** — checkboxes; excluded apps keep native ⌘P (Print). Run **Apply Browser Exclusions** after changing them.
+- **Excluded browsers** — checkboxes; excluded apps keep native ⌘P (Print). **Arc is never remapped** (it has its own command bar). Run **Apply Browser Exclusions** after changing them.
 
 ## Site search (Chrome / Arc style)
 
