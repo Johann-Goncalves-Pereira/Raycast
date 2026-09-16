@@ -19,6 +19,11 @@ import {
   isBrowserExcluded,
   type BrowserDefinition,
 } from "./browsers";
+import {
+  HistoryItem,
+  filterHistory,
+  getBrowserHistory,
+} from "./browser-history";
 import { Tab, classifyInput } from "./classify";
 import { BrowserExtension, getInstalledExtensions } from "./extensions";
 import { applyExclusionsToKarabiner } from "./karabiner";
@@ -98,6 +103,22 @@ export default function Command() {
     },
   );
 
+  const { data: history = [], isLoading: isLoadingHistory } = usePromise(
+    async (bundleId: string) => {
+      const browser = findBrowserByBundleId(bundleId);
+      if (!browser) return [] as HistoryItem[];
+      return getBrowserHistory(browser);
+    },
+    [context?.frontmost?.bundleId ?? ""],
+    {
+      execute: Boolean(
+        context?.allowed &&
+        context.browser?.engine !== "webkit" &&
+        context.frontmost?.bundleId,
+      ),
+    },
+  );
+
   const suggestionsEnabled = prefs.enableSuggestions !== false;
 
   const { data: suggestions = [], isLoading: isLoadingSuggestions } =
@@ -148,11 +169,58 @@ export default function Command() {
     [extensions],
   );
 
+  const fuseHistory = useMemo(
+    () =>
+      new Fuse(history, {
+        keys: ["title", "url", "domain"],
+        threshold: 0.4,
+        ignoreLocation: true,
+      }),
+    [history],
+  );
+
   const filteredTabs = useMemo(() => {
     const q = searchText.trim();
     if (!q) return tabs;
     return fuseTabs.search(q).map((r) => r.item);
   }, [fuseTabs, searchText, tabs]);
+
+  const filteredHistory = useMemo(() => {
+    const q = searchText.trim();
+    if (!q) return history.slice(0, 8);
+    return fuseHistory
+      .search(q)
+      .map((r) => r.item)
+      .slice(0, 12);
+  }, [fuseHistory, history, searchText]);
+
+  // Arc-style: best history hit, then New Tab, then the rest.
+  const topHistory = filteredHistory[0];
+  const moreHistory = filteredHistory.slice(1);
+
+  const scopedHistory = useMemo(() => {
+    if (!scopedSite) return [] as HistoryItem[];
+    const domainFiltered = filterHistory(
+      history,
+      "",
+      scopedSite.domains,
+      200,
+    );
+    const q = searchText.trim();
+    if (!q) return domainFiltered.slice(0, 8);
+    const fuse = new Fuse(domainFiltered, {
+      keys: ["title", "url", "domain"],
+      threshold: 0.4,
+      ignoreLocation: true,
+    });
+    return fuse
+      .search(q)
+      .map((r) => r.item)
+      .slice(0, 12);
+  }, [history, scopedSite, searchText]);
+
+  const topScopedHistory = scopedHistory[0];
+  const moreScopedHistory = scopedHistory.slice(1);
 
   const filteredExtensions = useMemo(() => {
     const q = searchText.trim().toLowerCase();
@@ -185,6 +253,7 @@ export default function Command() {
     isLoadingContext ||
     isLoadingTabs ||
     isLoadingExtensions ||
+    isLoadingHistory ||
     isLoadingSuggestions;
 
   if (contextError) {
@@ -234,7 +303,7 @@ export default function Command() {
     : keywordEngine
       ? `${keywordEngine.name} — press Tab to search`
       : browser
-        ? `Search ${browser.name} tabs, web, sites…`
+        ? `Search ${browser.name} tabs, history, web…`
         : "Search…";
 
   const classified = classifyInput(searchText);
@@ -285,6 +354,18 @@ export default function Command() {
     >
       {scopedSite ? (
         <>
+          {topScopedHistory && app && (
+            <List.Section title="History">
+              <HistoryListItem
+                item={topScopedHistory}
+                onOpen={() =>
+                  runAndClose(async () => {
+                    await openInBrowser(app, topScopedHistory.url);
+                  })
+                }
+              />
+            </List.Section>
+          )}
           {primaryTitle && app && (
             <List.Section title={scopedSite.name}>
               <List.Item
@@ -324,6 +405,54 @@ export default function Command() {
                   </ActionPanel>
                 }
               />
+            </List.Section>
+          )}
+          {!searchText.trim() && (
+            <List.Section title={scopedSite.name}>
+              <List.Item
+                title={`Search ${scopedSite.name}…`}
+                subtitle="Type a query, or press ⌫ to exit"
+                icon={{ source: Icon.MagnifyingGlass, tintColor: Color.Red }}
+                accessories={[
+                  {
+                    tag: {
+                      value: scopedSite.name,
+                      color: Color.Red,
+                    },
+                  },
+                ]}
+                actions={
+                  <ActionPanel>
+                    <Action
+                      title="Exit Site Search"
+                      icon={Icon.Undo}
+                      shortcut={{ modifiers: [], key: "backspace" }}
+                      onAction={() => {
+                        setScopedSite(null);
+                        setSearchText("");
+                      }}
+                    />
+                  </ActionPanel>
+                }
+              />
+            </List.Section>
+          )}
+          {moreScopedHistory.length > 0 && app && (
+            <List.Section
+              title={searchText.trim() ? "More History" : "Recent"}
+              subtitle={`${moreScopedHistory.length}`}
+            >
+              {moreScopedHistory.map((item) => (
+                <HistoryListItem
+                  key={`scoped-hist-${item.url}`}
+                  item={item}
+                  onOpen={() =>
+                    runAndClose(async () => {
+                      await openInBrowser(app, item.url);
+                    })
+                  }
+                />
+              ))}
             </List.Section>
           )}
           {(suggestions.length > 0 || globalSuggestions.length > 0) && (
@@ -370,36 +499,6 @@ export default function Command() {
                   />
                 ),
               )}
-            </List.Section>
-          )}
-          {!searchText.trim() && (
-            <List.Section title={scopedSite.name}>
-              <List.Item
-                title={`Search ${scopedSite.name}…`}
-                subtitle="Type a query, or press ⌫ to exit"
-                icon={{ source: Icon.MagnifyingGlass, tintColor: Color.Red }}
-                accessories={[
-                  {
-                    tag: {
-                      value: scopedSite.name,
-                      color: Color.Red,
-                    },
-                  },
-                ]}
-                actions={
-                  <ActionPanel>
-                    <Action
-                      title="Exit Site Search"
-                      icon={Icon.Undo}
-                      shortcut={{ modifiers: [], key: "backspace" }}
-                      onAction={() => {
-                        setScopedSite(null);
-                        setSearchText("");
-                      }}
-                    />
-                  </ActionPanel>
-                }
-              />
             </List.Section>
           )}
         </>
@@ -509,49 +608,109 @@ export default function Command() {
             </List.Section>
           )}
 
-          {primaryTitle && app && browser && (
-            <List.Section title="Web">
-              <List.Item
-                title={primaryTitle}
-                icon={Icon.MagnifyingGlass}
-                accessories={[{ text: browser.name }]}
-                actions={
-                  <ActionPanel>
-                    <Action
-                      title={
-                        classified.kind === "url" ? "Open URL" : "Search Web"
+          {/* With a query: best history → New Tab → more history.
+              Empty query: single Recent list (no New Tab row). */}
+          {searchText.trim() ? (
+            <>
+              {topHistory && app && (
+                <List.Section title="History">
+                  <HistoryListItem
+                    item={topHistory}
+                    onOpen={() =>
+                      runAndClose(async () => {
+                        await openInBrowser(app, topHistory.url);
+                      })
+                    }
+                  />
+                </List.Section>
+              )}
+
+              {primaryTitle && app && browser && (
+                <List.Section title="Web">
+                  <List.Item
+                    title={primaryTitle}
+                    icon={Icon.MagnifyingGlass}
+                    accessories={[{ text: browser.name }]}
+                    actions={
+                      <ActionPanel>
+                        <Action
+                          title={
+                            classified.kind === "url"
+                              ? "Open URL"
+                              : "Search Web"
+                          }
+                          icon={Icon.Globe}
+                          onAction={() =>
+                            runAndClose(async () => {
+                              await openQueryInBrowser(app, searchText);
+                            })
+                          }
+                        />
+                      </ActionPanel>
+                    }
+                  />
+                  {globalSuggestions.slice(0, 5).map((suggestion) => (
+                    <List.Item
+                      key={`gsug-${suggestion}`}
+                      title={`Search “${suggestion}”`}
+                      icon={Icon.Text}
+                      actions={
+                        <ActionPanel>
+                          <Action
+                            title="Search Web"
+                            icon={Icon.Globe}
+                            onAction={() =>
+                              runAndClose(async () => {
+                                await openQueryInBrowser(app, suggestion);
+                              })
+                            }
+                          />
+                        </ActionPanel>
                       }
-                      icon={Icon.Globe}
-                      onAction={() =>
+                    />
+                  ))}
+                </List.Section>
+              )}
+
+              {moreHistory.length > 0 && app && (
+                <List.Section
+                  title="More History"
+                  subtitle={`${moreHistory.length}`}
+                >
+                  {moreHistory.map((item) => (
+                    <HistoryListItem
+                      key={`hist-${item.url}`}
+                      item={item}
+                      onOpen={() =>
                         runAndClose(async () => {
-                          await openQueryInBrowser(app, searchText);
+                          await openInBrowser(app, item.url);
                         })
                       }
                     />
-                  </ActionPanel>
-                }
-              />
-              {globalSuggestions.slice(0, 5).map((suggestion) => (
-                <List.Item
-                  key={`gsug-${suggestion}`}
-                  title={`Search “${suggestion}”`}
-                  icon={Icon.Text}
-                  actions={
-                    <ActionPanel>
-                      <Action
-                        title="Search Web"
-                        icon={Icon.Globe}
-                        onAction={() =>
-                          runAndClose(async () => {
-                            await openQueryInBrowser(app, suggestion);
-                          })
-                        }
-                      />
-                    </ActionPanel>
-                  }
-                />
-              ))}
-            </List.Section>
+                  ))}
+                </List.Section>
+              )}
+            </>
+          ) : (
+            filteredHistory.length > 0 &&
+            app && (
+              <List.Section
+                title="Recent"
+                subtitle={`${filteredHistory.length}`}
+              >
+                {filteredHistory.map((item) => (
+                  <HistoryListItem
+                    key={`hist-${item.url}`}
+                    item={item}
+                    onOpen={() =>
+                      runAndClose(async () => {
+                        await openInBrowser(app, item.url);
+                      })
+                    }
+                  />
+                ))}
+              </List.Section>
+            )
           )}
 
           {filteredExtensions.length > 0 && (
@@ -594,7 +753,10 @@ export default function Command() {
             </List.Section>
           )}
 
-          {!isLoading && tabs.length === 0 && !searchText.trim() && (
+          {!isLoading &&
+            tabs.length === 0 &&
+            filteredHistory.length === 0 &&
+            !searchText.trim() && (
             <List.EmptyView
               icon={Icon.Window}
               title="No open tabs"
@@ -604,6 +766,28 @@ export default function Command() {
         </>
       )}
     </List>
+  );
+}
+
+function HistoryListItem(props: {
+  item: HistoryItem;
+  onOpen: () => void;
+}) {
+  const { item, onOpen } = props;
+  return (
+    <List.Item
+      id={`hist-${item.url}`}
+      title={item.title}
+      subtitle={item.domain}
+      icon={Icon.Clock}
+      accessories={[{ tag: { value: "History", color: Color.SecondaryText } }]}
+      actions={
+        <ActionPanel>
+          <Action title="Open" icon={Icon.Globe} onAction={onOpen} />
+          <Action.CopyToClipboard title="Copy URL" content={item.url} />
+        </ActionPanel>
+      }
+    />
   );
 }
 

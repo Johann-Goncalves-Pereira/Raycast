@@ -1,6 +1,6 @@
 # Browser Spotlight — Arc-style Cmd+P for browsers
 
-Local Raycast extension. When a Chromium/WebKit browser is frontmost, **⌘P** opens an Arc-like command bar: jump to open tabs, search the web, site-scoped search, and (Chromium) extensions.
+Local Raycast extension. When a Chromium/WebKit browser is frontmost, **⌘P** opens an Arc-like command bar: jump to open tabs, browse history, search the web, site-scoped search, and (Chromium) extensions.
 
 ## Setup
 
@@ -92,6 +92,10 @@ While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **
 
 When a Chromium-based browser is frontmost, Browser Spotlight reads your **active site-search shortcuts** and built-in search engines from that browser’s profile (`Web Data` → `keywords` table). This is the same list you manage in the browser under **Settings → Search engines and site search**.
 
+### History
+
+Chromium browsers also expose **recent / matching history** from the active profile (`History` → `urls`). With a query, the best history match appears **above** the Web (“new tab”) action, then more history below. Site-scoped search (Tab) filters history to that engine’s domains. Safari / Orion do not load history yet.
+
 ### How to use
 
 1. Open Browser Spotlight (**⌘P** when a supported browser is focused).
@@ -123,7 +127,7 @@ Shortcuts match what you configured — Arc users with `youtube.com` and `g` for
 ```bash
 npm install
 npm run dev      # run in Raycast
-npm run test     # unit tests (URL expansion, keyword matching, Web Data parsing)
+npm run test     # unit tests (URL expansion, keyword matching, Web Data / History parsing)
 npm run build
 ```
 
