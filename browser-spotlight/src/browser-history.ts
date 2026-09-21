@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BrowserDefinition } from "./browser-catalog";
+import { TTL, cacheKey, readFresh, writeCache } from "./cache";
 import { domainFromUrl } from "./classify";
 import { lastUsedProfileDir } from "./profile";
 
@@ -129,15 +130,22 @@ function readHistoryRows(historyPath: string): HistoryRow[] {
 /**
  * Recent history from the frontmost Chromium browser profile.
  * WebKit browsers (Safari/Orion) return [].
+ * Skips SQLite copy when a fresh cache entry exists (TTL ~30s).
  */
 export function getBrowserHistory(browser: BrowserDefinition): HistoryItem[] {
   if (browser.engine === "webkit") return [];
+
+  const key = cacheKey("history", browser.bundleId);
+  const fresh = readFresh<HistoryItem[]>(key, TTL.history);
+  if (fresh) return fresh;
 
   const profileDir = lastUsedProfileDir(browser);
   if (!profileDir) return [];
 
   const historyPath = join(profileDir, "History");
-  return mapHistoryRows(readHistoryRows(historyPath));
+  const items = mapHistoryRows(readHistoryRows(historyPath));
+  writeCache(key, items);
+  return items;
 }
 
 function matchesDomainFilter(item: HistoryItem, domains: string[]): boolean {

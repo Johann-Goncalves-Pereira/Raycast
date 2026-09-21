@@ -10,15 +10,16 @@ import {
   getPreferenceValues,
   popToRoot,
 } from "@raycast/api";
-import { usePromise } from "@raycast/utils";
+import { useCachedPromise, usePromise } from "@raycast/utils";
 import Fuse from "fuse.js";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ExtensionPreferences,
   findBrowserByBundleId,
   isBrowserExcluded,
   type BrowserDefinition,
 } from "./browsers";
+import { getBrowserSearchEngines } from "./browser-engines";
 import {
   HistoryItem,
   filterHistory,
@@ -26,26 +27,38 @@ import {
 } from "./browser-history";
 import { Tab, classifyInput } from "./classify";
 import { BrowserExtension, getInstalledExtensions } from "./extensions";
-import { applyExclusionsToKarabiner } from "./karabiner";
 import { openInBrowser, openQueryInBrowser } from "./open";
 import {
   SiteEngine,
+  FALLBACK_SITE_ENGINES,
   fetchDuckDuckGoSuggestions,
   fetchYouTubeSuggestions,
   isYouTubeEngine,
-  loadSiteEngines,
   matchingSiteEngines,
   resolveEngineKeyword,
   siteEngineFromTab,
+  siteEnginesFromKeywords,
 } from "./site-search";
 import { getTabsForBrowser, jumpToTab } from "./tabs";
 
 type ScopedSite = SiteEngine | null;
 
+const SUGGESTION_DEBOUNCE_MS = 200;
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 export default function Command() {
   const prefs = getPreferenceValues<ExtensionPreferences>();
   const [searchText, setSearchText] = useState("");
   const [scopedSite, setScopedSite] = useState<ScopedSite>(null);
+  const suggestionAbort = useRef<AbortController | null>(null);
 
   const {
     data: context,
@@ -66,13 +79,6 @@ export default function Command() {
 
   useEffect(() => {
     if (!context) return;
-
-    try {
-      applyExclusionsToKarabiner(prefs);
-    } catch {
-      // Non-fatal if Karabiner config is missing / locked
-    }
-
     if (!context.allowed) {
       void (async () => {
         await closeMainWindow();
@@ -81,21 +87,44 @@ export default function Command() {
     }
   }, [context]);
 
-  const siteEngines = useMemo(
-    () => loadSiteEngines(context?.browser ?? null),
-    [context?.browser],
+  // Cache plain keyword engines (urlTemplate strings) — buildUrl is not JSON-safe.
+  const { data: keywordEngines = [] } = useCachedPromise(
+    async (bundleId: string) => {
+      const browser = findBrowserByBundleId(bundleId);
+      if (!browser || browser.engine === "webkit") return [];
+      return getBrowserSearchEngines(browser);
+    },
+    [context?.frontmost?.bundleId ?? ""],
+    {
+      execute: Boolean(context?.allowed && context.frontmost?.bundleId),
+      initialData: [],
+    },
   );
 
-  const { data: tabs = [], isLoading: isLoadingTabs } = usePromise(
+  const siteEngines = useMemo(() => {
+    if (keywordEngines.length === 0) return FALLBACK_SITE_ENGINES;
+    return siteEnginesFromKeywords(keywordEngines);
+  }, [keywordEngines]);
+
+  const {
+    data: tabs = [],
+    isLoading: isLoadingTabs,
+  } = useCachedPromise(
     async (appName: string, bundleId: string) => {
       const app: Application = { name: appName, path: "", bundleId };
       return getTabsForBrowser(app);
     },
     [context?.frontmost?.name ?? "", context?.frontmost?.bundleId ?? ""],
-    { execute: Boolean(context?.allowed && context.frontmost?.name) },
+    {
+      execute: Boolean(context?.allowed && context.frontmost?.name),
+      initialData: [] as Tab[],
+    },
   );
 
-  const { data: extensions = [], isLoading: isLoadingExtensions } = usePromise(
+  const {
+    data: extensions = [],
+    isLoading: isLoadingExtensions,
+  } = useCachedPromise(
     async (bundleId: string) => {
       const browser = findBrowserByBundleId(bundleId);
       if (!browser) return [] as BrowserExtension[];
@@ -105,13 +134,17 @@ export default function Command() {
     {
       execute: Boolean(
         context?.allowed &&
-        context.browser?.engine !== "webkit" &&
-        context.frontmost?.bundleId,
+          context.browser?.engine !== "webkit" &&
+          context.frontmost?.bundleId,
       ),
+      initialData: [] as BrowserExtension[],
     },
   );
 
-  const { data: history = [], isLoading: isLoadingHistory } = usePromise(
+  const {
+    data: history = [],
+    isLoading: isLoadingHistory,
+  } = useCachedPromise(
     async (bundleId: string) => {
       const browser = findBrowserByBundleId(bundleId);
       if (!browser) return [] as HistoryItem[];
@@ -121,39 +154,45 @@ export default function Command() {
     {
       execute: Boolean(
         context?.allowed &&
-        context.browser?.engine !== "webkit" &&
-        context.frontmost?.bundleId,
+          context.browser?.engine !== "webkit" &&
+          context.frontmost?.bundleId,
       ),
+      initialData: [] as HistoryItem[],
     },
   );
 
   const suggestionsEnabled = prefs.enableSuggestions !== false;
+  const debouncedSearchText = useDebouncedValue(
+    searchText,
+    SUGGESTION_DEBOUNCE_MS,
+  );
+  const suggestionQuery = suggestionsEnabled
+    ? debouncedSearchText.trim()
+    : "";
+  const suggestionYoutube = Boolean(
+    scopedSite && isYouTubeEngine(scopedSite),
+  );
 
-  const { data: suggestions = [], isLoading: isLoadingSuggestions } =
-    usePromise(
-      async (query: string, scopedId: string | null, youtube: boolean) => {
-        if (!suggestionsEnabled || !query.trim()) return [] as string[];
-        if (youtube) return fetchYouTubeSuggestions(query);
-        return fetchDuckDuckGoSuggestions(query);
-      },
-      [
-        scopedSite ? searchText : "",
-        scopedSite?.id ?? null,
-        scopedSite ? isYouTubeEngine(scopedSite) : false,
-      ],
-      { execute: Boolean(scopedSite) && suggestionsEnabled },
-    );
-
-  const { data: globalSuggestions = [] } = usePromise(
-    async (query: string) => {
-      if (!suggestionsEnabled || !query.trim() || scopedSite)
-        return [] as string[];
-      return fetchDuckDuckGoSuggestions(query);
+  const { data: suggestions = [] } = useCachedPromise(
+    async (query: string, youtube: boolean) => {
+      if (!query) return [] as string[];
+      if (youtube) {
+        return fetchYouTubeSuggestions(
+          query,
+          suggestionAbort.current?.signal,
+        );
+      }
+      return fetchDuckDuckGoSuggestions(
+        query,
+        suggestionAbort.current?.signal,
+      );
     },
-    [searchText],
+    [suggestionQuery, suggestionYoutube],
     {
-      execute:
-        !scopedSite && suggestionsEnabled && searchText.trim().length > 0,
+      execute: suggestionsEnabled && suggestionQuery.length > 0,
+      keepPreviousData: true,
+      abortable: suggestionAbort,
+      initialData: [] as string[],
     },
   );
 
@@ -257,12 +296,13 @@ export default function Command() {
     return matchingSiteEngines(searchText, siteEngines, tabs);
   }, [scopedSite, searchText, siteEngines, tabs]);
 
+  // Spinner only while we have no data yet — never wait on suggestions,
+  // and don't spin when stale cache already painted results.
+  const hasCachedData = tabs.length > 0 || history.length > 0;
   const isLoading =
     isLoadingContext ||
-    isLoadingTabs ||
-    isLoadingExtensions ||
-    isLoadingHistory ||
-    isLoadingSuggestions;
+    (!hasCachedData &&
+      (isLoadingTabs || isLoadingExtensions || isLoadingHistory));
 
   if (contextError) {
     return (
@@ -337,6 +377,11 @@ export default function Command() {
     : keywordEngine
       ? Color.Orange
       : Color.SecondaryText;
+
+  const scopedSuggestions =
+    scopedSite && suggestionQuery.length > 0 ? suggestions : [];
+  const globalSuggestions =
+    !scopedSite && suggestionQuery.length > 0 ? suggestions : [];
 
   return (
     <List
@@ -451,50 +496,48 @@ export default function Command() {
               ))}
             </List.Section>
           )}
-          {(suggestions.length > 0 || globalSuggestions.length > 0) && (
+          {scopedSuggestions.length > 0 && (
             <List.Section title="Suggestions">
-              {(suggestions.length ? suggestions : globalSuggestions).map(
-                (suggestion) => (
-                  <List.Item
-                    key={`sug-${suggestion}`}
-                    title={suggestion}
-                    icon={{
-                      source: Icon.MagnifyingGlass,
-                      tintColor: Color.Red,
-                    }}
-                    accessories={[
-                      {
-                        tag: {
-                          value: scopedSite.name,
-                          color: Color.Red,
-                        },
+              {scopedSuggestions.map((suggestion) => (
+                <List.Item
+                  key={`sug-${suggestion}`}
+                  title={suggestion}
+                  icon={{
+                    source: Icon.MagnifyingGlass,
+                    tintColor: Color.Red,
+                  }}
+                  accessories={[
+                    {
+                      tag: {
+                        value: scopedSite.name,
+                        color: Color.Red,
                       },
-                    ]}
-                    actions={
-                      <ActionPanel>
-                        <Action
-                          title={`Search ${scopedSite.name}`}
-                          icon={Icon.MagnifyingGlass}
-                          onAction={() =>
-                            runAndClose(async () => {
-                              if (!app) return;
-                              await openInBrowser(
-                                app,
-                                scopedSite.buildUrl(suggestion),
-                              );
-                            })
-                          }
-                        />
-                        <Action
-                          title="Exit Site Search"
-                          icon={Icon.Undo}
-                          onAction={() => setScopedSite(null)}
-                        />
-                      </ActionPanel>
-                    }
-                  />
-                ),
-              )}
+                    },
+                  ]}
+                  actions={
+                    <ActionPanel>
+                      <Action
+                        title={`Search ${scopedSite.name}`}
+                        icon={Icon.MagnifyingGlass}
+                        onAction={() =>
+                          runAndClose(async () => {
+                            if (!app) return;
+                            await openInBrowser(
+                              app,
+                              scopedSite.buildUrl(suggestion),
+                            );
+                          })
+                        }
+                      />
+                      <Action
+                        title="Exit Site Search"
+                        icon={Icon.Undo}
+                        onAction={() => setScopedSite(null)}
+                      />
+                    </ActionPanel>
+                  }
+                />
+              ))}
             </List.Section>
           )}
         </>
@@ -753,12 +796,12 @@ export default function Command() {
             tabs.length === 0 &&
             filteredHistory.length === 0 &&
             !searchText.trim() && (
-            <List.EmptyView
-              icon={Icon.Window}
-              title="No open tabs"
-              description="Grant Raycast Automation access to this browser, or open a tab and try again."
-            />
-          )}
+              <List.EmptyView
+                icon={Icon.Window}
+                title="No open tabs"
+                description="Grant Raycast Automation access to this browser, or open a tab and try again."
+              />
+            )}
         </>
       )}
     </List>

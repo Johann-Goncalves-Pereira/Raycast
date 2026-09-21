@@ -1,5 +1,9 @@
 import { Tab, domainFromUrl } from "./classify";
-import { expandSearchUrl, getBrowserSearchEngines } from "./browser-engines";
+import {
+  BrowserKeywordEngine,
+  expandSearchUrl,
+  getBrowserSearchEngines,
+} from "./browser-engines";
 import { BrowserDefinition } from "./browser-catalog";
 
 export type SiteEngine = {
@@ -10,6 +14,8 @@ export type SiteEngine = {
   domains: string[];
   buildUrl: (query: string) => string;
   color?: string;
+  /** Present when restored from a cached keyword engine (JSON-safe). */
+  urlTemplate?: string;
 };
 
 /** Small fallback when the browser has no readable keyword DB (e.g. Safari). */
@@ -39,17 +45,25 @@ export const FALLBACK_SITE_ENGINES: SiteEngine[] = [
   },
 ];
 
-export function loadSiteEngines(
-  browser: BrowserDefinition | null,
+/** Reconstruct SiteEngine from a JSON-serializable keyword engine. */
+export function siteEnginesFromKeywords(
+  engines: BrowserKeywordEngine[],
 ): SiteEngine[] {
-  if (!browser) return FALLBACK_SITE_ENGINES;
-  const fromBrowser = getBrowserSearchEngines(browser).map((engine) => ({
+  return engines.map((engine) => ({
     id: engine.id,
     name: engine.name,
     keywords: engine.keywords,
     domains: engine.domains,
+    urlTemplate: engine.urlTemplate,
     buildUrl: (q: string) => expandSearchUrl(engine.urlTemplate, q),
   }));
+}
+
+export function loadSiteEngines(
+  browser: BrowserDefinition | null,
+): SiteEngine[] {
+  if (!browser) return FALLBACK_SITE_ENGINES;
+  const fromBrowser = siteEnginesFromKeywords(getBrowserSearchEngines(browser));
   return fromBrowser.length > 0 ? fromBrowser : FALLBACK_SITE_ENGINES;
 }
 
@@ -179,11 +193,13 @@ export function matchingSiteEngines(
 
 export async function fetchDuckDuckGoSuggestions(
   query: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (!query.trim()) return [];
   try {
     const response = await fetch(
       `https://duckduckgo.com/ac/?q=${encodeURIComponent(query)}&type=list`,
+      { signal },
     );
     if (!response.ok) return [];
     const data = (await response.json()) as unknown;
@@ -210,11 +226,13 @@ export async function fetchDuckDuckGoSuggestions(
 
 export async function fetchYouTubeSuggestions(
   query: string,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   if (!query.trim()) return [];
   try {
     const response = await fetch(
       `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=${encodeURIComponent(query)}`,
+      { signal },
     );
     if (!response.ok) return [];
     const data = (await response.json()) as unknown;

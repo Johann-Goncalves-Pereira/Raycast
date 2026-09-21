@@ -88,6 +88,8 @@ While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **
 - Search engine + typeahead suggestions
 - **Excluded browsers** — checkboxes; excluded apps keep native ⌘P (Print). **Arc is never remapped** (it has its own command bar). Run **Apply Browser Exclusions** after changing them.
 
+Tabs, history, site engines, and extensions are cached between opens (stale-while-revalidate). The first Cmd+P after install still hits disk/AppleScript; later opens paint last results immediately, then refresh in the background.
+
 ## Site search (Chrome / Arc style)
 
 When a Chromium-based browser is frontmost, Browser Spotlight reads your **active site-search shortcuts** and built-in search engines from that browser’s profile (`Web Data` → `keywords` table). This is the same list you manage in the browser under **Settings → Search engines and site search**.

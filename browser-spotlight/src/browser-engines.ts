@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BrowserDefinition } from "./browser-catalog";
+import { TTL, cacheKey, readFresh, writeCache } from "./cache";
 import { lastUsedProfileDir } from "./profile";
 
 export type BrowserKeywordEngine = {
@@ -157,17 +158,24 @@ function readKeywordsFromWebData(webDataPath: string): KeywordRow[] {
 /**
  * Search engines + active site-search shortcuts from the frontmost
  * Chromium/Arc browser profile (chrome://settings/searchEngines).
+ * Skips SQLite copy when a fresh cache entry exists (TTL ~5 min).
  */
 export function getBrowserSearchEngines(
   browser: BrowserDefinition,
 ): BrowserKeywordEngine[] {
   if (browser.engine === "webkit") return [];
 
+  const key = cacheKey("engines", browser.bundleId);
+  const fresh = readFresh<BrowserKeywordEngine[]>(key, TTL.engines);
+  if (fresh) return fresh;
+
   const profileDir = lastUsedProfileDir(browser);
   if (!profileDir) return [];
 
   const webData = join(profileDir, "Web Data");
-  return mapKeywordRowsToEngines(readKeywordsFromWebData(webData));
+  const engines = mapKeywordRowsToEngines(readKeywordsFromWebData(webData));
+  writeCache(key, engines);
+  return engines;
 }
 
 /** Map Chromium keywords rows to site/search engines (exported for tests). */

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join, isAbsolute } from "path";
 import { BrowserDefinition, profileRootFor } from "./browsers";
+import { TTL, cacheKey, readFresh, writeCache } from "./cache";
 import { listProfileDirs } from "./profile";
 
 export type BrowserExtension = {
@@ -130,6 +131,10 @@ export function getInstalledExtensions(
 ): BrowserExtension[] {
   if (browser.engine === "webkit" || !browser.urlScheme) return [];
 
+  const key = cacheKey("extensions", browser.bundleId);
+  const fresh = readFresh<BrowserExtension[]>(key, TTL.extensions);
+  if (fresh) return fresh;
+
   const root = profileRootFor(browser);
   if (!root) return [];
 
@@ -153,5 +158,9 @@ export function getInstalledExtensions(
     }
   }
 
-  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  const list = Array.from(byId.values()).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  writeCache(key, list);
+  return list;
 }

@@ -1,6 +1,7 @@
 import { Application, open } from "@raycast/api";
 import { runAppleScript } from "@raycast/utils";
 import { BrowserDefinition } from "./browsers";
+import { TTL, cacheKey, readFresh, writeCache } from "./cache";
 import { Tab, domainFromUrl } from "./classify";
 
 const scriptListTabs = (browserName: string) => `
@@ -54,9 +55,15 @@ function parseTabs(raw: string | undefined): Tab[] {
 }
 
 export async function getTabsForBrowser(app: Application): Promise<Tab[]> {
+  const key = cacheKey("tabs", app.bundleId ?? app.name);
+  const fresh = readFresh<Tab[]>(key, TTL.tabs);
+  if (fresh) return fresh;
+
   try {
     const raw = await runAppleScript(scriptListTabs(app.name));
-    return parseTabs(raw);
+    const tabs = parseTabs(raw);
+    writeCache(key, tabs);
+    return tabs;
   } catch (error) {
     console.error(`Failed to list tabs for ${app.name}`, error);
     return [];
