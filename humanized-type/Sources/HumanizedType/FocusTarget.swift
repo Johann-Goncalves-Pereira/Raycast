@@ -81,25 +81,17 @@ struct FocusTarget {
         return nil
     }
 
-    /// True only for the field captured at start: same app, window, URL, and element.
+    /// True only when the captured AX element is still the focused field.
     func isCurrentlyFocused() -> Bool {
-        if let front = NSWorkspace.shared.frontmostApplication,
-           front.processIdentifier != pid {
-            return false
-        }
+        let frontmostMatches = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
         guard let current = Self.captureBestFocused(verbose: false) else {
             return false
         }
-        guard fingerprint.matches(current.fingerprint) else {
-            return false
-        }
-        if CFEqual(current.element, element) {
-            return true
-        }
-        if let lockedFrame = fingerprint.frame, let currentFrame = current.fingerprint.frame {
-            return lockedFrame.isClose(to: currentFrame)
-        }
-        return false
+        return FocusFingerprint.stillOnField(
+            frontmostPIDMatches: frontmostMatches,
+            fingerprintMatches: fingerprint.matches(current.fingerprint),
+            elementEqual: CFEqual(current.element, element)
+        )
     }
 
     /// Read AXValue + selection if the field exposes them.

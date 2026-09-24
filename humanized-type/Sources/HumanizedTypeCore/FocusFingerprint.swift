@@ -70,4 +70,13 @@ public struct FocusFingerprint: Equatable, Sendable {
         }
         return lhs == rhs
     }
+
+    /// A nearby frame is not the same field. The captured element has to match.
+    public static func stillOnField(
+        frontmostPIDMatches: Bool,
+        fingerprintMatches: Bool,
+        elementEqual: Bool
+    ) -> Bool {
+        frontmostPIDMatches && fingerprintMatches && elementEqual
+    }
 }

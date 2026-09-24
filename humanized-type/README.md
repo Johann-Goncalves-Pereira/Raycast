@@ -59,7 +59,7 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 
 ### Focus pause
 
-After Raycast dismisses, the script locks the focused field by app, parent-window title, URL, and AX element. It **never steals focus** and does not treat a similar title as the same field.
+After Raycast dismisses, the script locks the focused field. When that element accepts direct insertion, characters go only into it, even if you focus something else. Otherwise keystrokes pause until that same element is focused again. A similar frame is not treated as the same field. It **never steals focus**.
 
 - Stay in that field → typing continues.
 - Switch desktop, app, window, tab, or field → typing **pauses**. Return to the original field to resume.

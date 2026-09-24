@@ -18,6 +18,7 @@ extension HumanizedTypeMain {
         var didNotifyAbort = false
         let progressEvery = 25
         let abortMonitor = UserKeyAbortMonitor.shared
+        let directInsert = target.supportsDirectInsert()
         abortMonitor.start()
         abortMonitor.setTargetFocused(true)
         defer { abortMonitor.stop() }
@@ -46,31 +47,23 @@ extension HumanizedTypeMain {
                 break
             }
 
-            if event.phase == .down, !target.isCurrentlyFocused() {
-                abortMonitor.setTargetFocused(false)
-                if !didNotifyPause {
-                    didNotifyPause = true
-                    RunLog.info("paused: focus left target field \(target.description)")
-                    notify(
-                        """
-                        Typing paused. Return to the original field to continue, \
-                        or press any key there to stop.
-                        """
-                    )
-                }
-                while !target.isCurrentlyFocused() {
-                    PrecisionClock.sleep(milliseconds: 100)
-                }
-                abortMonitor.setTargetFocused(true)
+            if directInsert, event.phase == .down {
+                abortMonitor.setTargetFocused(target.isCurrentlyFocused())
+            }
+
+            if !directInsert, event.phase == .down, !target.isCurrentlyFocused() {
+                startNs = waitUntilFieldReturns(
+                    target: target,
+                    abortMonitor: abortMonitor,
+                    didNotifyPause: &didNotifyPause,
+                    offsetNs: offsetNs
+                )
                 if stopIfUserKey() {
                     break
                 }
-                startNs = PrecisionClock.nowNs() &- offsetNs
-                RunLog.info("resumed: focus returned to target field")
-                didNotifyPause = false
             }
 
-            if KeyEventDispatcher.post(event: event) {
+            if deliver(event: event, target: target, directInsert: directInsert) {
                 posted += 1
                 if posted == 1 {
                     RunLog.info("first keystroke key=\(event.key) phase=\(event.phase.rawValue)")
@@ -92,6 +85,49 @@ extension HumanizedTypeMain {
             RunLog.fail("CGEvent failures=\(failures) posted=\(posted)")
         }
         return posted
+    }
+
+    private static func waitUntilFieldReturns(
+        target: FocusTarget,
+        abortMonitor: UserKeyAbortMonitor,
+        didNotifyPause: inout Bool,
+        offsetNs: UInt64
+    ) -> UInt64 {
+        abortMonitor.setTargetFocused(false)
+        if !didNotifyPause {
+            didNotifyPause = true
+            RunLog.info("paused: focus left target field \(target.description)")
+            notify(
+                """
+                Typing paused. Return to the original field to continue, \
+                or press any key there to stop.
+                """
+            )
+        }
+        while !target.isCurrentlyFocused() {
+            PrecisionClock.sleep(milliseconds: 100)
+        }
+        abortMonitor.setTargetFocused(true)
+        RunLog.info("resumed: focus returned to target field")
+        didNotifyPause = false
+        return PrecisionClock.nowNs() &- offsetNs
+    }
+
+    private static func deliver(
+        event: ScheduledKeyEvent,
+        target: FocusTarget,
+        directInsert: Bool
+    ) -> Bool {
+        guard directInsert else {
+            return KeyEventDispatcher.post(event: event)
+        }
+        guard event.phase == .down else {
+            return true
+        }
+        if event.key == KeyboardTopology.backspaceToken {
+            return target.deleteBackward()
+        }
+        return target.insertText(event.key)
     }
 
     /// When AXValue is readable, backspace a mismatched tail and retype the correct one.
@@ -141,17 +177,15 @@ extension HumanizedTypeMain {
         RunLog.info("end-repair mismatch delete=\(deleteCount) retype=\(missing.count)")
 
         for _ in 0..<deleteCount {
-            postRepairKey(KeyboardTopology.backspaceToken, downMs: 12, upMs: 18)
-            if !target.isCurrentlyFocused() {
-                RunLog.fail("end-repair aborted: focus left during backspace")
+            guard target.deleteBackward() else {
+                RunLog.fail("end-repair aborted: backspace failed on locked field")
                 return
             }
         }
 
         for character in missing {
-            postRepairKey(String(character), downMs: 10, upMs: 14)
-            if !target.isCurrentlyFocused() {
-                RunLog.fail("end-repair aborted: focus left during retype")
+            guard target.insertText(String(character)) else {
+                RunLog.fail("end-repair aborted: insert failed on locked field")
                 return
             }
         }
@@ -161,15 +195,6 @@ extension HumanizedTypeMain {
         } else {
             RunLog.fail("end-repair finished but field still mismatches")
         }
-    }
-
-    private static func postRepairKey(_ key: String, downMs: Double, upMs: Double) {
-        let keyDown = ScheduledKeyEvent(key: key, phase: .down, timestampMs: 0)
-        let keyUp = ScheduledKeyEvent(key: key, phase: .keyUp, timestampMs: 0)
-        _ = KeyEventDispatcher.post(event: keyDown)
-        PrecisionClock.sleep(milliseconds: downMs)
-        _ = KeyEventDispatcher.post(event: keyUp)
-        PrecisionClock.sleep(milliseconds: upMs)
     }
 
 }

@@ -364,6 +364,22 @@ struct FocusFingerprintTests {
         )
         #expect(!left.matches(right))
     }
+
+    @Test("similar frame is not the locked field when the element differs")
+    func similarFrameDifferentElement() {
+        let same = FocusFingerprint.stillOnField(
+            frontmostPIDMatches: true,
+            fingerprintMatches: true,
+            elementEqual: true
+        )
+        let otherField = FocusFingerprint.stillOnField(
+            frontmostPIDMatches: true,
+            fingerprintMatches: true,
+            elementEqual: false
+        )
+        #expect(same)
+        #expect(!otherField)
+    }
 }
 
 @Suite("FieldRepair")
