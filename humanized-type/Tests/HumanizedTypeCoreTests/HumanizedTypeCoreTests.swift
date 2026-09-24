@@ -237,6 +237,84 @@ struct EventSchedulerTests {
         let backspaces = events.filter { $0.key == KeyboardTopology.backspaceToken }
         #expect(!backspaces.isEmpty)
     }
+
+    @Test("error pipeline net text equals source")
+    func errorPipelineNetsToSource() {
+        var config = ChronometryConfig.practical
+        config.errorProbability = 1.0
+        config.thinkingEnabled = false
+        let samples = [
+            "hello",
+            "the quick brown fox",
+            "AbCd Ef!",
+            String(repeating: "typing ", count: 20),
+        ]
+        for text in samples {
+            var scheduler = EventScheduler(config: config, wpm: 190)
+            var rng = SequenceRandomSource(
+                [0.0] + Array(repeating: 0.37, count: 20_000)
+            )
+            let events = scheduler.generate(text: text, rng: &rng)
+            let net = TranscriptReplay.netText(from: events)
+            #expect(net == text)
+        }
+    }
+
+    @Test("zero-error schedule nets to source")
+    func cleanScheduleNetsToSource() {
+        var config = ChronometryConfig.practical
+        config.errorProbability = 0
+        config.thinkingEnabled = false
+        var scheduler = EventScheduler(config: config, wpm: 190)
+        var rng = SequenceRandomSource(Array(repeating: 0.5, count: 4_000))
+        let text = "clean schedule path"
+        let events = scheduler.generate(text: text, rng: &rng)
+        #expect(TranscriptReplay.netText(from: events) == text)
+    }
+}
+
+@Suite("FocusFingerprint")
+struct FocusFingerprintTests {
+    @Test("different pid does not match")
+    func differentPid() {
+        let a = FocusFingerprint(pid: 1, role: "AXTextField", windowTitle: "Doc")
+        let b = FocusFingerprint(pid: 2, role: "AXTextField", windowTitle: "Doc")
+        #expect(!a.matches(b))
+    }
+
+    @Test("different document URL pauses")
+    func differentURL() {
+        let a = FocusFingerprint(
+            pid: 1,
+            role: "AXTextArea",
+            windowTitle: "Chrome",
+            documentURL: "https://a.example/"
+        )
+        let b = FocusFingerprint(
+            pid: 1,
+            role: "AXTextArea",
+            windowTitle: "Chrome",
+            documentURL: "https://b.example/"
+        )
+        #expect(!a.matches(b))
+    }
+
+    @Test("same fingerprint matches")
+    func sameFingerprint() {
+        let a = FocusFingerprint(
+            pid: 42,
+            role: "AXTextField",
+            windowTitle: "Notes",
+            documentURL: ""
+        )
+        let b = FocusFingerprint(
+            pid: 42,
+            role: "AXTextField",
+            windowTitle: "Notes",
+            documentURL: ""
+        )
+        #expect(a.matches(b))
+    }
 }
 
 @Suite("KeyboardTopology")

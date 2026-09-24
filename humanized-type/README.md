@@ -57,11 +57,17 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 - ⌥V on many keyboard layouts inserts `√` and will fight the script.
 - In Raycast: Script Commands → Humanized Type → set Hotkey to the Raycast key (star) + V.
 
-### Focus lock
+### Focus pause
 
-After Raycast dismisses, the script tries to capture the focused AX text field and **re-focuses it before every key-down**. If AX capture fails (common in some browsers/Docs), it logs a warning and still types into whatever is focused.
+After Raycast dismisses, the script captures the focused AX text field fingerprint (app, role, window title / URL). It **never steals focus** back to that window.
 
-Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. If a lock was acquired and then fails five times in a row, typing stops.
+- Stay in the field → typing continues.
+- Switch desktop, window, or tab → typing **pauses** (notification). Return to the original field to resume, or press ✦V again to cancel.
+- If no text-like field can be captured, the run stops instead of spraying keystrokes into the wrong place.
+
+Typos are intentional (~2%): you will see a neighbor key, then backspaces, then the correct character. When the field exposes `AXValue`, a final pass repairs any leftover mismatch so the finished text matches the clipboard.
+
+Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. Pause still works via window title when available; end-repair is skipped when `AXValue` is missing.
 
 Validate (SwiftLint strict + tests + release build):
 

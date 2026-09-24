@@ -1,15 +1,26 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import HumanizedTypeCore
 
-/// Captures the focused AX element at start and re-focuses it before keystrokes
-/// so typing stays locked even if the user clicks elsewhere.
+/// Captures the focused AX text field and pauses typing when focus leaves it.
 struct FocusTarget {
     var appElement: AXUIElement
     var element: AXUIElement
     var pid: pid_t
     var role: String
+    var fingerprint: FocusFingerprint
     var description: String
+    /// Snapshot of field text around the caret when AXValue is readable.
+    var textSnapshot: TextSnapshot?
+
+    struct TextSnapshot {
+        var fullValue: String
+        var selectedRange: CFRange
+        var prefix: String
+        var selection: String
+        var suffix: String
+    }
 
     private static let raycastBundleIds: Set<String> = [
         "com.raycast.macos",
@@ -19,6 +30,16 @@ struct FocusTarget {
     private static let rejectedRoles: Set<String> = [
         "AXApplication",
         "AXSystemWide",
+        "AXWindow",
+        "AXToolbar",
+        "AXMenuBar",
+    ]
+
+    private static let preferredRolePrefixes = [
+        "AXText",
+        "AXCombo",
+        "AXSearch",
+        "AXWeb",
     ]
 
     /// Wait until Raycast is gone, then poll for a usable focused element.
@@ -33,7 +54,7 @@ struct FocusTarget {
                 continue
             }
 
-            if let target = captureBestFocused() {
+            if let target = captureBestFocused(), isTextLike(target) {
                 RunLog.info("focus capture ok \(target.description)")
                 return target
             }
@@ -44,7 +65,10 @@ struct FocusTarget {
             Thread.sleep(forTimeInterval: 0.08)
         }
 
-        return captureBestFocused()
+        if let target = captureBestFocused(), isTextLike(target) {
+            return target
+        }
+        return nil
     }
 
     static func captureBestFocused() -> FocusTarget? {
@@ -54,16 +78,34 @@ struct FocusTarget {
         if let appFocused = captureFromFrontmostApp(), isAcceptable(appFocused) {
             return appFocused
         }
-        // Last resort: accept whatever focused element we got, even if role is odd.
-        return captureFromSystemWide() ?? captureFromFrontmostApp()
+        return nil
     }
 
-    static func captureFromSystemWide() -> FocusTarget? {
+    /// True when the currently focused field matches this target's fingerprint.
+    func isCurrentlyFocused() -> Bool {
+        guard let current = Self.captureBestFocused() else {
+            return false
+        }
+        return fingerprint.matches(current.fingerprint)
+    }
+
+    /// Read AXValue + selection if the field exposes them.
+    func readTextSnapshot() -> TextSnapshot? {
+        Self.readTextSnapshot(of: element)
+    }
+
+    /// Expected full value after typing `source` into the captured selection.
+    func expectedValue(afterTyping source: String) -> String? {
+        guard let snap = textSnapshot else { return nil }
+        return snap.prefix + source + snap.suffix
+    }
+
+    private static func captureFromSystemWide() -> FocusTarget? {
         let system = AXUIElementCreateSystemWide()
         return elementFromFocusedAttribute(of: system, source: "system")
     }
 
-    static func captureFromFrontmostApp() -> FocusTarget? {
+    private static func captureFromFrontmostApp() -> FocusTarget? {
         guard let front = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
@@ -105,10 +147,21 @@ struct FocusTarget {
 
         let appElement = AXUIElementCreateApplication(pid)
         let role = stringAttribute(element, kAXRoleAttribute as String) ?? "unknown"
-        let title = stringAttribute(element, kAXTitleAttribute as String)
-            ?? stringAttribute(element, kAXDescriptionAttribute as String)
-            ?? ""
-        let description = "source=\(source) pid=\(pid) role=\(role) title=\(title)"
+        let windowTitle = windowTitle(for: element, app: appElement)
+        let documentURL = documentURL(for: element, app: appElement)
+        let frame = frame(of: element)
+        let fingerprint = FocusFingerprint(
+            pid: pid,
+            role: role,
+            windowTitle: windowTitle,
+            documentURL: documentURL,
+            frame: frame
+        )
+        let snapshot = readTextSnapshot(of: element)
+        let description =
+            "source=\(source) pid=\(pid) role=\(role) " +
+            "title=\(windowTitle) url=\(documentURL) " +
+            "axValue=\(snapshot != nil)"
         RunLog.info("focus candidate \(description)")
 
         return FocusTarget(
@@ -116,7 +169,9 @@ struct FocusTarget {
             element: element,
             pid: pid,
             role: role,
-            description: description
+            fingerprint: fingerprint,
+            description: description,
+            textSnapshot: snapshot
         )
     }
 
@@ -124,38 +179,158 @@ struct FocusTarget {
         if rejectedRoles.contains(target.role) {
             return false
         }
-        // Prefer text-like roles, but allow unknown web/custom roles.
-        let preferredPrefixes = ["AXText", "AXCombo", "AXSearch", "AXWeb", "AXGroup"]
-        if preferredPrefixes.contains(where: { target.role.hasPrefix($0) }) {
-            return true
-        }
-        // Many editors report AXTextArea / AXTextField; also accept focused generic.
         return target.role != "unknown"
     }
 
-    /// Activate the target app and restore keyboard focus to the captured element.
-    @discardableResult
-    func refocus() -> Bool {
-        guard let app = NSRunningApplication(processIdentifier: pid) else {
+    private static func isTextLike(_ target: FocusTarget) -> Bool {
+        if rejectedRoles.contains(target.role) {
             return false
         }
-        _ = app.activate(options: [.activateIgnoringOtherApps])
-
-        let setFocused = AXUIElementSetAttributeValue(
-            element,
-            kAXFocusedAttribute as CFString,
-            kCFBooleanTrue
-        )
-        if setFocused == .success {
+        if preferredRolePrefixes.contains(where: { target.role.hasPrefix($0) }) {
             return true
         }
+        // Accept focused fields that expose editable text.
+        return target.textSnapshot != nil
+    }
 
-        let setAppFocused = AXUIElementSetAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            element
+    private static func windowTitle(for element: AXUIElement, app: AXUIElement) -> String {
+        if let title = stringAttribute(element, kAXTitleAttribute as String), !title.isEmpty {
+            return title
+        }
+        if let window = parentWindow(of: element),
+           let title = stringAttribute(window, kAXTitleAttribute as String),
+           !title.isEmpty {
+            return title
+        }
+        var windowsRef: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            app,
+            kAXWindowsAttribute as CFString,
+            &windowsRef
         )
-        return setAppFocused == .success
+        guard status == .success,
+              let windows = windowsRef as? [AXUIElement],
+              let first = windows.first,
+              let title = stringAttribute(first, kAXTitleAttribute as String)
+        else {
+            return ""
+        }
+        return title
+    }
+
+    private static func documentURL(for element: AXUIElement, app: AXUIElement) -> String {
+        let keys = [
+            "AXDocument",
+            "AXURL",
+            kAXURLAttribute as String,
+        ]
+        for key in keys {
+            if let value = stringAttribute(element, key), !value.isEmpty {
+                return value
+            }
+            if let window = parentWindow(of: element),
+               let value = stringAttribute(window, key),
+               !value.isEmpty {
+                return value
+            }
+            if let value = stringAttribute(app, key), !value.isEmpty {
+                return value
+            }
+        }
+        return ""
+    }
+
+    private static func parentWindow(of element: AXUIElement) -> AXUIElement? {
+        var current = element
+        for _ in 0..<12 {
+            var parentRef: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(
+                current,
+                kAXParentAttribute as CFString,
+                &parentRef
+            )
+            guard status == .success, let parentRef else { return nil }
+            guard CFGetTypeID(parentRef) == AXUIElementGetTypeID() else { return nil }
+            let parent = unsafeBitCast(parentRef, to: AXUIElement.self)
+            let role = stringAttribute(parent, kAXRoleAttribute as String) ?? ""
+            if role == "AXWindow" {
+                return parent
+            }
+            current = parent
+        }
+        return nil
+    }
+
+    private static func frame(of element: AXUIElement) -> FocusFrame? {
+        var positionRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        let posStatus = AXUIElementCopyAttributeValue(
+            element,
+            kAXPositionAttribute as CFString,
+            &positionRef
+        )
+        let sizeStatus = AXUIElementCopyAttributeValue(
+            element,
+            kAXSizeAttribute as CFString,
+            &sizeRef
+        )
+        guard posStatus == .success, sizeStatus == .success,
+              let positionRef, let sizeRef,
+              CFGetTypeID(positionRef) == AXValueGetTypeID(),
+              CFGetTypeID(sizeRef) == AXValueGetTypeID()
+        else {
+            return nil
+        }
+        let positionValue = unsafeBitCast(positionRef, to: AXValue.self)
+        let sizeValue = unsafeBitCast(sizeRef, to: AXValue.self)
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue, .cgPoint, &point),
+              AXValueGetValue(sizeValue, .cgSize, &size)
+        else {
+            return nil
+        }
+        return FocusFrame(
+            x: Double(point.x),
+            y: Double(point.y),
+            width: Double(size.width),
+            height: Double(size.height)
+        )
+    }
+
+    private static func readTextSnapshot(of element: AXUIElement) -> TextSnapshot? {
+        guard let value = stringAttribute(element, kAXValueAttribute as String) else {
+            return nil
+        }
+
+        var rangeRef: CFTypeRef?
+        let rangeStatus = AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeRef
+        )
+        var selected = CFRange(location: 0, length: 0)
+        if rangeStatus == .success, let rangeRef {
+            // Prefer AXValue CFRange when present.
+            let axValue = unsafeBitCast(rangeRef, to: AXValue.self)
+            if AXValueGetType(axValue) == .cfRange {
+                _ = AXValueGetValue(axValue, .cfRange, &selected)
+            }
+        }
+
+        let chars = Array(value)
+        let start = max(0, min(selected.location, chars.count))
+        let end = max(start, min(start + max(selected.length, 0), chars.count))
+        let prefix = String(chars[..<start])
+        let selection = String(chars[start..<end])
+        let suffix = String(chars[end...])
+        return TextSnapshot(
+            fullValue: value,
+            selectedRange: CFRange(location: start, length: end - start),
+            prefix: prefix,
+            selection: selection,
+            suffix: suffix
+        )
     }
 
     private static func isOwnOrRaycastFrontmost() -> Bool {
@@ -184,6 +359,12 @@ struct FocusTarget {
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
         guard status == .success, let value else { return nil }
-        return value as? String
+        if let string = value as? String {
+            return string
+        }
+        if let url = value as? URL {
+            return url.absoluteString
+        }
+        return nil
     }
 }

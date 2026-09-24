@@ -261,8 +261,15 @@ public struct EventScheduler: Sendable {
     ) {
         let intended = text[index]
 
-        // INJECT_ADJACENT_TYPO
+        // Flight after previous key-up so the typo does not share a down-time.
         let errChar = errors.adjacentNeighbor(of: intended, rng: &rng)
+        let typoFlight = biomechanics.digraphLatencyMs(
+            from: cursor.previousChar,
+            to: errChar,
+            speedFactor: speedFactor,
+            rng: &rng
+        )
+        let typoDown = cursor.currentTimeMs + max(config.flightFloorMs, typoFlight)
         let errDwell = biomechanics.holdMs(
             for: errChar,
             speedFactor: speedFactor,
@@ -270,10 +277,13 @@ public struct EventScheduler: Sendable {
         )
         schedulePress(
             key: String(errChar),
-            downAt: cursor.currentTimeMs,
+            downAt: typoDown,
             holdMs: errDwell,
             cursor: &cursor
         )
+        cursor.currentTimeMs = typoDown + errDwell
+        cursor.previousChar = errChar
+        cursor.previousDwellMs = errDwell
 
         // MOTOR_INERTIA_OVERRUN
         let overrunTyped = scheduleOverrun(
@@ -292,8 +302,9 @@ public struct EventScheduler: Sendable {
             rng: &rng
         )
 
-        // BURST_BACKSPACE
-        scheduleBackspaceBurst(count: 1 + overrunTyped.count, cursor: &cursor, rng: &rng)
+        // BURST_BACKSPACE — only chars this pipeline inserted (typo + overrun).
+        let insertedCount = 1 + overrunTyped.count
+        scheduleBackspaceBurst(count: insertedCount, cursor: &cursor, rng: &rng)
 
         // RESUMPTION_PAUSE
         cursor.currentTimeMs += biomechanics.sampler.sampleExGaussian(
@@ -329,7 +340,7 @@ public struct EventScheduler: Sendable {
                 speedFactor: speedFactor,
                 rng: &rng
             )
-            cursor.currentTimeMs += flight
+            let downAt = cursor.currentTimeMs + max(config.flightFloorMs, flight)
             let ovrDwell = biomechanics.holdMs(
                 for: nextIntended,
                 speedFactor: speedFactor,
@@ -337,10 +348,11 @@ public struct EventScheduler: Sendable {
             )
             schedulePress(
                 key: String(nextIntended),
-                downAt: cursor.currentTimeMs,
+                downAt: downAt,
                 holdMs: ovrDwell,
                 cursor: &cursor
             )
+            cursor.currentTimeMs = downAt + ovrDwell
             overrunTyped.append(nextIntended)
             lastChar = nextIntended
             overrunIdx += 1
