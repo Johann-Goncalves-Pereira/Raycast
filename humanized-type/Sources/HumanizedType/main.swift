@@ -8,7 +8,8 @@ import HumanizedTypeCore
 enum HumanizedTypeMain {
     /// Soft cap so a huge clipboard cannot run for hours.
     private static let defaultMaxChars = 5_000
-    private static let defaultWpm = 160.0
+    private static let defaultWpm = 190.0
+    private static let maxConsecutiveRefocusFailures = 5
     private static let pidFileURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("humanized-type.pid")
 
@@ -20,7 +21,6 @@ enum HumanizedTypeMain {
         let wpm = parseWpm(from: args) ?? defaultWpm
         let maxChars = parseMaxChars(from: args) ?? defaultMaxChars
 
-        // Second ⌥V cancels an in-flight run instead of restarting after ~5 chars.
         if handleCancelIfAlreadyRunning() {
             exit(0)
         }
@@ -36,52 +36,21 @@ enum HumanizedTypeMain {
         )
 
         guard isAccessibilityTrusted() else {
-            let message = """
-            Accessibility is not granted to humanized-type. \
-            System Settings → Privacy & Security → Accessibility → enable humanized-type (and Raycast).
-            """
-            RunLog.fail(message)
-            notify(message)
-            exit(1)
+            failAndExit(
+                """
+                Accessibility is not granted to humanized-type. \
+                System Settings → Privacy & Security → Accessibility → enable humanized-type (and Raycast).
+                """
+            )
         }
 
-        guard let raw = NSPasteboard.general.string(forType: .string),
-              !raw.isEmpty
-        else {
-            let message = "Clipboard is empty. Copy text, focus a field, then press ⌥V."
-            RunLog.fail(message)
-            notify(message)
-            exit(1)
-        }
-
-        let text: String
-        if maxChars > 0, raw.count > maxChars {
-            let minutes = estimateMinutes(chars: raw.count, wpm: wpm)
-            let message = """
-            Clipboard is \(raw.count) characters \
-            (~\(minutes) min at \(Int(wpm)) WPM). \
-            Refusing. Copy a shorter selection, or run with --max-chars 0.
-            """
-            .replacingOccurrences(of: "\n", with: " ")
-            RunLog.fail(message)
-            notify("Clipboard too large (\(raw.count) chars). Cap is \(maxChars).")
-            exit(1)
-        } else {
-            text = raw
-        }
-
+        let text = readClipboardOrExit(maxChars: maxChars, wpm: wpm)
         let lineCount = text.split(whereSeparator: \.isNewline).count
         let estMin = estimateMinutes(chars: text.count, wpm: wpm)
-        RunLog.info(
-            "clipboard chars=\(text.count) lines=\(lineCount) estMin=\(estMin)"
-        )
+        RunLog.info("clipboard chars=\(text.count) lines=\(lineCount) estMin=\(estMin)")
 
         writePidFile()
         defer { clearPidFile() }
-
-        if !dryRun {
-            PrecisionClock.sleep(milliseconds: 200)
-        }
 
         let config = useResearch ? ChronometryConfig.research : ChronometryConfig.practical
         var scheduler = EventScheduler(config: config, wpm: wpm)
@@ -92,18 +61,51 @@ enum HumanizedTypeMain {
         if logTiming {
             writeTimingLog(scheduler.timingLog)
         }
-
         if dryRun {
             RunLog.info("dry-run complete; no keystrokes posted")
             exit(0)
         }
 
-        let posted = play(events: events)
+        PrecisionClock.sleep(milliseconds: 200)
+        guard let target = FocusTarget.captureAfterRaycastDismisses() else {
+            failAndExit(
+                "Could not capture focused input. Focus a text field, then press ⌥V again."
+            )
+        }
+        RunLog.info("focus lock \(target.description)")
+
+        let posted = play(events: events, target: target)
         RunLog.info("done posted=\(posted) of \(events.count)")
         if posted == 0 {
             notify("Typed 0 keystrokes. See ~/Library/Logs/humanized-type.log")
             exit(1)
         }
+    }
+
+    private static func failAndExit(_ message: String) -> Never {
+        RunLog.fail(message)
+        notify(message)
+        exit(1)
+    }
+
+    private static func readClipboardOrExit(maxChars: Int, wpm: Double) -> String {
+        guard let raw = NSPasteboard.general.string(forType: .string),
+              !raw.isEmpty
+        else {
+            failAndExit("Clipboard is empty. Copy text, focus a field, then press ⌥V.")
+        }
+        if maxChars > 0, raw.count > maxChars {
+            let minutes = estimateMinutes(chars: raw.count, wpm: wpm)
+            failAndExit(
+                """
+                Clipboard is \(raw.count) characters \
+                (~\(minutes) min at \(Int(wpm)) WPM). \
+                Refusing. Copy a shorter selection, or run with --max-chars 0.
+                """
+                .replacingOccurrences(of: "\n", with: " ")
+            )
+        }
+        return raw
     }
 
     /// Returns true when this invocation only cancelled a previous typer.
@@ -147,7 +149,7 @@ enum HumanizedTypeMain {
         return trusted
     }
 
-    private static func play(events: [ScheduledKeyEvent]) -> Int {
+    private static func play(events: [ScheduledKeyEvent], target: FocusTarget) -> Int {
         guard let first = events.first else {
             RunLog.fail("scheduler produced zero events")
             return 0
@@ -156,6 +158,7 @@ enum HumanizedTypeMain {
         let startNs = PrecisionClock.nowNs()
         var posted = 0
         var failures = 0
+        var refocusFailures = 0
         let progressEvery = 25
 
         for (index, event) in events.enumerated() {
@@ -163,6 +166,25 @@ enum HumanizedTypeMain {
             let offsetNs = UInt64(offsetMs * 1_000_000.0)
             let deadlineNs = startNs &+ offsetNs
             PrecisionClock.sleepUntil(deadlineNs: deadlineNs)
+
+            if event.phase == .down {
+                if target.refocus() {
+                    refocusFailures = 0
+                } else {
+                    refocusFailures += 1
+                    if refocusFailures == 1 {
+                        RunLog.fail("refocus failed for \(target.description)")
+                    }
+                    if refocusFailures >= maxConsecutiveRefocusFailures {
+                        RunLog.fail(
+                            "aborting after \(refocusFailures) consecutive refocus failures"
+                        )
+                        notify("Lost focus lock on the target field. Typing stopped.")
+                        break
+                    }
+                }
+            }
+
             if KeyEventDispatcher.post(event: event) {
                 posted += 1
                 if posted == 1 {

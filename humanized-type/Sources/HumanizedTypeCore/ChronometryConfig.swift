@@ -105,6 +105,17 @@ public struct ChronometryConfig: Sendable {
     public var sameFingerSigmaScale: Double = 1.4
     public var sameFingerTauScale: Double = 1.2
 
+    /// Long-form “thinking” pauses (off for research defaults).
+    public var thinkingEnabled: Bool = false
+    /// Only inject thinking when paste length ≥ this.
+    public var thinkingMinChars: Int = 200
+    /// Characters between thinking pauses (sampled per burst).
+    public var thinkingEveryCharsMin: Int = 400
+    public var thinkingEveryCharsMax: Int = 900
+    /// Thinking pause duration range (ms).
+    public var thinkingPauseMinMs: Double = 5_000
+    public var thinkingPauseMaxMs: Double = 15_000
+
     public init() {}
 
     /// Full research-report midpoints (~65 WPM synthesizer baseline).
@@ -113,32 +124,44 @@ public struct ChronometryConfig: Sendable {
     /// Alias for research midpoints (tests / hermetic sampling).
     public static let `default` = ChronometryConfig.research
 
-    /// Raycast productivity profile: snappy, light jitter, no error theater.
+    /// Raycast productivity profile: ~190 WPM with pauses, typos, and thinking.
     public static var practical: ChronometryConfig {
         var config = ChronometryConfig()
-        config.motorMuMs = 55.0
-        config.motorSigmaMs = 12.0
-        config.motorTauMs = 18.0
-        config.crossHandSpeedupMs = 20.0
-        config.flightFloorMs = 18.0
-        config.holdGeometricMeanMs = 45.0
-        config.holdShiftMs = 15.0
-        config.holdMinMs = 20.0
-        config.holdMaxMs = 90.0
-        config.wordBoundaryMuMs = 40.0
-        config.wordBoundarySigmaMs = 10.0
-        config.wordBoundaryTauMs = 20.0
-        config.clauseMuMs = 80.0
-        config.clauseSigmaMs = 20.0
-        config.clauseTauMs = 30.0
-        // Keep a slight sentence beat without multi-second freezes.
-        config.sentenceParetoTMinMs = 120.0
-        config.sentenceParetoAlpha = 1.6
-        config.sentenceParetoTMaxMs = 280.0
-        config.errorProbability = 0.0
-        config.rolloverProbability = 0.25
-        config.fittsAMs = 40.0
-        config.fittsBMsPerBit = 30.0
+        config.motorMuMs = 48.0
+        config.motorSigmaMs = 14.0
+        config.motorTauMs = 22.0
+        config.crossHandSpeedupMs = 18.0
+        config.flightFloorMs = 16.0
+        config.holdGeometricMeanMs = 40.0
+        config.holdShiftMs = 12.0
+        config.holdMinMs = 18.0
+        config.holdMaxMs = 85.0
+        config.fittsAMs = 35.0
+        config.fittsBMsPerBit = 28.0
+        config.wordBoundaryMuMs = 70.0
+        config.wordBoundarySigmaMs = 16.0
+        config.wordBoundaryTauMs = 28.0
+        config.clauseMuMs = 160.0
+        config.clauseSigmaMs = 35.0
+        config.clauseTauMs = 55.0
+        config.sentenceParetoTMinMs = 280.0
+        config.sentenceParetoAlpha = 1.5
+        config.sentenceParetoTMaxMs = 750.0
+        config.errorProbability = 0.02
+        config.freezeMuMs = 160.0
+        config.freezeSigmaMs = 30.0
+        config.freezeTauMs = 50.0
+        config.resumptionMuMs = 200.0
+        config.resumptionSigmaMs = 40.0
+        config.resumptionTauMs = 60.0
+        config.backspaceFlightMuMs = 55.0
+        config.rolloverProbability = 0.35
+        config.thinkingEnabled = true
+        config.thinkingMinChars = 200
+        config.thinkingEveryCharsMin = 400
+        config.thinkingEveryCharsMax = 900
+        config.thinkingPauseMinMs = 5_000
+        config.thinkingPauseMaxMs = 15_000
         return config
     }
 

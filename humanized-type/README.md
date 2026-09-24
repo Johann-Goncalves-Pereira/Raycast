@@ -15,9 +15,10 @@ pauses, and optional error-correction loops).
 |----------|--------|
 | Raycast title | Humanized Type |
 | Mode | `silent` |
-| Runtime | CoreGraphics HID events (no third-party deps) |
-| Default speed | 65 WPM |
-| Error rate | 2.5% alphanumeric substitutions |
+| Runtime | CoreGraphics HID + Accessibility focus lock |
+| Default speed | ~190 WPM (practical) |
+| Error rate | ~2% alphanumeric substitutions |
+| Thinking pauses | 5–15 s every ~400–900 chars (pastes ≥ 200 chars) |
 
 ---
 
@@ -47,7 +48,13 @@ Optional flags:
 ./.build/release/humanized-type --dry-run
 ```
 
-Default Raycast profile is **practical** (~160 WPM, short pauses, no typo injection). Press ⌥V again while typing to **cancel**.
+Default Raycast profile is **practical** (~190 WPM, linguistic pauses, ~2% typos, 5–15s thinking pauses on long pastes). Press ⌥V again while typing to **cancel**.
+
+### Focus lock
+
+After Raycast dismisses, the script captures the focused AX text field and **re-focuses it before every key-down**. You can switch apps or click elsewhere; typing continues in the original field when the AX node remains valid.
+
+Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. If the lock cannot be restored five times in a row, typing stops and a notification is shown (see `~/Library/Logs/humanized-type.log`).
 
 Validate (SwiftLint strict + tests + release build):
 

@@ -81,6 +81,10 @@ public struct EventScheduler: Sendable {
 
         let characters = Array(text)
         var index = 0
+        var charsSinceThinking = 0
+        var nextThinkingThreshold = sampleThinkingThreshold(rng: &rng)
+        let thinkingAllowed =
+            config.thinkingEnabled && characters.count >= config.thinkingMinChars
 
         while index < characters.count {
             let target = characters[index]
@@ -110,6 +114,16 @@ public struct EventScheduler: Sendable {
                     rng: &rng
                 )
                 index += 1
+                charsSinceThinking += 1
+                if thinkingAllowed {
+                    maybeInsertThinkingPause(
+                        at: index,
+                        charsSinceThinking: &charsSinceThinking,
+                        nextThreshold: &nextThinkingThreshold,
+                        cursor: &cursor,
+                        rng: &rng
+                    )
+                }
                 continue
             }
 
@@ -120,9 +134,51 @@ public struct EventScheduler: Sendable {
                 rng: &rng
             )
             index += 1
+            charsSinceThinking += 1
+            if thinkingAllowed {
+                maybeInsertThinkingPause(
+                    at: index,
+                    charsSinceThinking: &charsSinceThinking,
+                    nextThreshold: &nextThinkingThreshold,
+                    cursor: &cursor,
+                    rng: &rng
+                )
+            }
         }
 
         return cursor.events.sorted(by: Self.eventOrder)
+    }
+
+    private mutating func maybeInsertThinkingPause(
+        at index: Int,
+        charsSinceThinking: inout Int,
+        nextThreshold: inout Int,
+        cursor: inout ScheduleCursor,
+        rng: inout some RandomSource
+    ) {
+        guard charsSinceThinking >= nextThreshold else { return }
+        let span = config.thinkingPauseMaxMs - config.thinkingPauseMinMs
+        let thinkingMs =
+            config.thinkingPauseMinMs + rng.nextUnitInterval() * max(span, 0)
+        cursor.currentTimeMs += thinkingMs
+        timingLog.append(
+            TimingSample(
+                fromIndex: max(0, index - 1),
+                toIndex: index,
+                ikiMs: thinkingMs,
+                kind: "thinking"
+            )
+        )
+        charsSinceThinking = 0
+        nextThreshold = sampleThinkingThreshold(rng: &rng)
+    }
+
+    private mutating func sampleThinkingThreshold(rng: inout some RandomSource) -> Int {
+        let low = max(1, config.thinkingEveryCharsMin)
+        let high = max(low, config.thinkingEveryCharsMax)
+        let span = high - low
+        let draw = Int((rng.nextUnitInterval() * Double(span)).rounded(.down))
+        return low + min(draw, span)
     }
 
     private static func eventOrder(_ lhs: ScheduledKeyEvent, _ rhs: ScheduledKeyEvent) -> Bool {

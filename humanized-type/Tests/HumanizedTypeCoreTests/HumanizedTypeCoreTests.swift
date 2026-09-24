@@ -183,10 +183,45 @@ struct EventSchedulerTests {
         let fast = practical.digraphLatencyMs(
             from: "t",
             to: "h",
-            speedFactor: ChronometryConfig.speedFactor(wpm: 160),
+            speedFactor: ChronometryConfig.speedFactor(wpm: 190),
             rng: &rngB
         )
         #expect(fast < slow)
+    }
+
+    @Test("long paste inserts thinking pause between 5s and 15s")
+    func thinkingPauseOnLongPaste() {
+        var config = ChronometryConfig.practical
+        config.errorProbability = 0
+        config.thinkingEnabled = true
+        config.thinkingMinChars = 200
+        config.thinkingEveryCharsMin = 400
+        config.thinkingEveryCharsMax = 400
+        config.thinkingPauseMinMs = 5_000
+        config.thinkingPauseMaxMs = 15_000
+        var scheduler = EventScheduler(config: config, wpm: 190)
+        var rng = SequenceRandomSource(Array(repeating: 0.5, count: 8_000))
+        let text = String(repeating: "abcdefghij ", count: 50) // 550 chars
+        _ = scheduler.generate(text: text, rng: &rng)
+        let thinking = scheduler.timingLog.filter { $0.kind == "thinking" }
+        #expect(!thinking.isEmpty)
+        for sample in thinking {
+            #expect(sample.ikiMs >= 5_000)
+            #expect(sample.ikiMs <= 15_000)
+        }
+    }
+
+    @Test("short paste skips thinking pauses")
+    func noThinkingOnShortPaste() {
+        var config = ChronometryConfig.practical
+        config.errorProbability = 0
+        config.thinkingEnabled = true
+        config.thinkingMinChars = 200
+        var scheduler = EventScheduler(config: config, wpm: 190)
+        var rng = SequenceRandomSource(Array(repeating: 0.5, count: 512))
+        _ = scheduler.generate(text: "short only", rng: &rng)
+        let thinking = scheduler.timingLog.filter { $0.kind == "thinking" }
+        #expect(thinking.isEmpty)
     }
 
     @Test("error pipeline emits backspace tokens")
