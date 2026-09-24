@@ -9,6 +9,7 @@ final class UserKeyAbortMonitor: @unchecked Sendable {
     static let syntheticUserData: Int64 = 0x4854_5950
 
     private let aborted = OSAllocatedUnfairLock(initialState: false)
+    private let targetFocused = OSAllocatedUnfairLock(initialState: false)
     private var tapPort: CFMachPort?
     private var runLoop: CFRunLoop?
 
@@ -16,6 +17,11 @@ final class UserKeyAbortMonitor: @unchecked Sendable {
 
     var isAborted: Bool {
         aborted.withLock { $0 }
+    }
+
+    /// Keys outside the locked field must not stop the run.
+    func setTargetFocused(_ focused: Bool) {
+        targetFocused.withLock { $0 = focused }
     }
 
     func start() {
@@ -71,7 +77,8 @@ final class UserKeyAbortMonitor: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
         let marker = event.getIntegerValueField(.eventSourceUserData)
-        if marker != UserKeyAbortMonitor.syntheticUserData {
+        let onTarget = monitor.targetFocused.withLock { $0 }
+        if onTarget, marker != UserKeyAbortMonitor.syntheticUserData {
             monitor.markAborted()
         }
         return Unmanaged.passUnretained(event)

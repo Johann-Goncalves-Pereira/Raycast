@@ -19,6 +19,7 @@ extension HumanizedTypeMain {
         let progressEvery = 25
         let abortMonitor = UserKeyAbortMonitor.shared
         abortMonitor.start()
+        abortMonitor.setTargetFocused(true)
         defer { abortMonitor.stop() }
 
         func stopIfUserKey() -> Bool {
@@ -46,6 +47,7 @@ extension HumanizedTypeMain {
             }
 
             if event.phase == .down, !target.isCurrentlyFocused() {
+                abortMonitor.setTargetFocused(false)
                 if !didNotifyPause {
                     didNotifyPause = true
                     RunLog.info("paused: focus left target field \(target.description)")
@@ -56,9 +58,10 @@ extension HumanizedTypeMain {
                         """
                     )
                 }
-                while !target.isCurrentlyFocused(), !abortMonitor.isAborted {
+                while !target.isCurrentlyFocused() {
                     PrecisionClock.sleep(milliseconds: 100)
                 }
+                abortMonitor.setTargetFocused(true)
                 if stopIfUserKey() {
                     break
                 }
@@ -110,9 +113,31 @@ extension HumanizedTypeMain {
             return
         }
 
-        let common = commonPrefixLength(actual, expected)
-        let deleteCount = actual.count - common
-        let missing = String(expected.dropFirst(common))
+        switch FieldRepairDecision.decide(actual: actual, expected: expected) {
+        case .matches:
+            RunLog.info("end-repair ok: field matches source")
+            return
+        case .skipTooLarge(let deleteCount, let retypeCount):
+            RunLog.info(
+                "end-repair skipped: mismatch too large delete=\(deleteCount) retype=\(retypeCount)"
+            )
+            return
+        case .repair(let deleteCount, let missing):
+            applyRepair(
+                target: target,
+                deleteCount: deleteCount,
+                missing: missing,
+                expected: expected
+            )
+        }
+    }
+
+    private static func applyRepair(
+        target: FocusTarget,
+        deleteCount: Int,
+        missing: String,
+        expected: String
+    ) {
         RunLog.info("end-repair mismatch delete=\(deleteCount) retype=\(missing.count)")
 
         for _ in 0..<deleteCount {
@@ -147,14 +172,4 @@ extension HumanizedTypeMain {
         PrecisionClock.sleep(milliseconds: upMs)
     }
 
-    private static func commonPrefixLength(_ lhs: String, _ rhs: String) -> Int {
-        let left = Array(lhs)
-        let right = Array(rhs)
-        let limit = min(left.count, right.count)
-        var index = 0
-        while index < limit, left[index] == right[index] {
-            index += 1
-        }
-        return index
-    }
 }

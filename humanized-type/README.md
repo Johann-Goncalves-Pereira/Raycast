@@ -59,16 +59,16 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 
 ### Focus pause
 
-After Raycast dismisses, the script captures that exact AX text element. It **never steals focus** and does not treat a similar title as the same field.
+After Raycast dismisses, the script locks the focused field by app, parent-window title, URL, and AX element. It **never steals focus** and does not treat a similar title as the same field.
 
 - Stay in that field → typing continues.
-- Switch desktop, window, tab, or field → typing **pauses**. Return to the original field to resume.
-- Press any key → typing **stops**. Pressing ✦V again still cancels too.
+- Switch desktop, app, window, tab, or field → typing **pauses**. Return to the original field to resume.
+- Press any key **in that field** → typing **stops**. Keys in other apps do not stop it. Pressing ✦V again still cancels too.
 - If no text-like field can be captured, the run stops instead of spraying keystrokes.
 
-Typos are intentional (~2%): you will see a neighbor key, then backspaces, then the correct character. When the field exposes `AXValue`, a final pass repairs any leftover mismatch so the finished text matches the clipboard.
+Typos are intentional (~2%): you will see a neighbor key, then backspaces, then the correct character. When the field exposes `AXValue`, a final pass repairs a short mismatched suffix so the finished text matches the clipboard.
 
-Caveat: Google Docs / some canvas editors expose a weak Accessibility tree, so end-repair is skipped when `AXValue` is missing. The field gate is the captured element itself, not the window title.
+Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. End-repair is skipped when `AXValue` is missing or the mismatch is longer than a short suffix, so a bad reading cannot wipe the document.
 
 Validate (SwiftLint strict + tests + release build):
 

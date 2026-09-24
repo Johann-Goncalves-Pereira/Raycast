@@ -22,8 +22,8 @@ public struct FocusFrame: Equatable, Sendable {
     }
 }
 
-/// Snapshot used in tests and logs.
-/// Live typing uses `CFEqual` on the captured AX element in FocusTarget, not this matcher.
+/// Snapshot of the focused field. Live typing also requires the same AX element
+/// (or the same frame when that element is re-fetched).
 public struct FocusFingerprint: Equatable, Sendable {
     public var pid: Int32
     public var role: String
@@ -45,24 +45,29 @@ public struct FocusFingerprint: Equatable, Sendable {
         self.frame = frame
     }
 
-    /// True when the currently focused element is the same field we started on.
+    /// True when pid, role, window title, URL, and frame still describe one field.
+    /// A generic element title does not match a different parent-window title.
     public func matches(_ other: FocusFingerprint) -> Bool {
         guard pid == other.pid else { return false }
-        if let lhs = frame, let rhs = other.frame, !lhs.isClose(to: rhs) {
-            return false
-        }
         if !role.isEmpty, !other.role.isEmpty, role != other.role {
             return false
         }
-        if !documentURL.isEmpty || !other.documentURL.isEmpty {
-            return documentURL == other.documentURL
+        if !Self.sameOptionalText(documentURL, other.documentURL) {
+            return false
         }
-        if !windowTitle.isEmpty || !other.windowTitle.isEmpty {
-            return windowTitle == other.windowTitle
+        if !Self.sameOptionalText(windowTitle, other.windowTitle) {
+            return false
         }
         if let lhs = frame, let rhs = other.frame {
             return lhs.isClose(to: rhs)
         }
-        return role == other.role
+        return true
+    }
+
+    private static func sameOptionalText(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs.isEmpty, rhs.isEmpty {
+            return true
+        }
+        return lhs == rhs
     }
 }

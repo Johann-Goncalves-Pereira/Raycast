@@ -81,18 +81,25 @@ struct FocusTarget {
         return nil
     }
 
-    /// True only for the same AX element captured at start (not a similar title).
+    /// True only for the field captured at start: same app, window, URL, and element.
     func isCurrentlyFocused() -> Bool {
+        if let front = NSWorkspace.shared.frontmostApplication,
+           front.processIdentifier != pid {
+            return false
+        }
         guard let current = Self.captureBestFocused(verbose: false) else {
             return false
         }
-        guard CFEqual(current.element, element) else {
+        guard fingerprint.matches(current.fingerprint) else {
             return false
+        }
+        if CFEqual(current.element, element) {
+            return true
         }
         if let lockedFrame = fingerprint.frame, let currentFrame = current.fingerprint.frame {
             return lockedFrame.isClose(to: currentFrame)
         }
-        return true
+        return false
     }
 
     /// Read AXValue + selection if the field exposes them.
@@ -207,12 +214,12 @@ struct FocusTarget {
     }
 
     private static func windowTitle(for element: AXUIElement, app: AXUIElement) -> String {
-        if let title = stringAttribute(element, kAXTitleAttribute as String), !title.isEmpty {
-            return title
-        }
         if let window = parentWindow(of: element),
            let title = stringAttribute(window, kAXTitleAttribute as String),
            !title.isEmpty {
+            return title
+        }
+        if let title = stringAttribute(element, kAXTitleAttribute as String), !title.isEmpty {
             return title
         }
         var windowsRef: CFTypeRef?

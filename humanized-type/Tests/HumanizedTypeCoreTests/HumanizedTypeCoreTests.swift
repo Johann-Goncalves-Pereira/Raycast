@@ -316,6 +316,38 @@ struct FocusFingerprintTests {
         #expect(a.matches(b))
     }
 
+    @Test("generic element title does not match a different window title")
+    func differentWindowTitle() {
+        let elementTitle = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Conteúdo do documento"
+        )
+        let windowTitle = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Notes - Google Docs"
+        )
+        #expect(!elementTitle.matches(windowTitle))
+    }
+
+    @Test("same URL with a different window title does not match")
+    func sameURLDifferentWindowTitle() {
+        let left = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Doc A - Google Docs",
+            documentURL: "https://docs.google.com/document/d/abc"
+        )
+        let right = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Doc B - Google Docs",
+            documentURL: "https://docs.google.com/document/d/abc"
+        )
+        #expect(!left.matches(right))
+    }
+
     @Test("different frame does not match")
     func differentFrame() {
         let left = FocusFingerprint(
@@ -331,6 +363,29 @@ struct FocusFingerprintTests {
             frame: FocusFrame(x: 10, y: 80, width: 400, height: 200)
         )
         #expect(!left.matches(right))
+    }
+}
+
+@Suite("FieldRepair")
+struct FieldRepairTests {
+    @Test("matching field needs no rewrite")
+    func alreadyMatches() {
+        let decision = FieldRepairDecision.decide(actual: "Hello", expected: "Hello")
+        #expect(decision == .matches)
+    }
+
+    @Test("short suffix is repaired")
+    func shortSuffix() {
+        let decision = FieldRepairDecision.decide(actual: "Hellp", expected: "Hello")
+        #expect(decision == .repair(deleteCount: 1, retype: "o"))
+    }
+
+    @Test("large AXValue drift is skipped")
+    func tooLarge() {
+        let actual = "Hi"
+        let expected = String(repeating: "a", count: 623)
+        let decision = FieldRepairDecision.decide(actual: actual, expected: expected)
+        #expect(decision == .skipTooLarge(deleteCount: 2, retypeCount: 623))
     }
 }
 
