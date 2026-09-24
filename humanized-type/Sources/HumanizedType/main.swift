@@ -1,18 +1,38 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 import HumanizedTypeCore
 
 @main
 enum HumanizedTypeMain {
+    /// Soft cap so a huge clipboard cannot run for hours.
+    private static let defaultMaxChars = 5_000
+    private static let defaultWpm = 160.0
+    private static let pidFileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("humanized-type.pid")
+
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
         let logTiming = args.contains("--log-timing")
         let dryRun = args.contains("--dry-run")
-        let wpm = parseWpm(from: args) ?? 65.0
+        let useResearch = args.contains("--research")
+        let wpm = parseWpm(from: args) ?? defaultWpm
+        let maxChars = parseMaxChars(from: args) ?? defaultMaxChars
+
+        // Second ⌥V cancels an in-flight run instead of restarting after ~5 chars.
+        if handleCancelIfAlreadyRunning() {
+            exit(0)
+        }
 
         RunLog.info(
-            "start pid=\(ProcessInfo.processInfo.processIdentifier) dryRun=\(dryRun) wpm=\(wpm)"
+            """
+            start pid=\(ProcessInfo.processInfo.processIdentifier) \
+            dryRun=\(dryRun) wpm=\(wpm) maxChars=\(maxChars) \
+            profile=\(useResearch ? "research" : "practical")
+            """
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
         )
 
         guard isAccessibilityTrusted() else {
@@ -25,8 +45,8 @@ enum HumanizedTypeMain {
             exit(1)
         }
 
-        guard let text = NSPasteboard.general.string(forType: .string),
-              !text.isEmpty
+        guard let raw = NSPasteboard.general.string(forType: .string),
+              !raw.isEmpty
         else {
             let message = "Clipboard is empty. Copy text, focus a field, then press ⌥V."
             RunLog.fail(message)
@@ -34,14 +54,37 @@ enum HumanizedTypeMain {
             exit(1)
         }
 
-        RunLog.info("clipboard chars=\(text.count) lines=\(text.split(separator: "\n").count)")
-
-        // Let Raycast dismiss before keystrokes land in the previous app.
-        if !dryRun {
-            PrecisionClock.sleep(milliseconds: 250)
+        let text: String
+        if maxChars > 0, raw.count > maxChars {
+            let minutes = estimateMinutes(chars: raw.count, wpm: wpm)
+            let message = """
+            Clipboard is \(raw.count) characters \
+            (~\(minutes) min at \(Int(wpm)) WPM). \
+            Refusing. Copy a shorter selection, or run with --max-chars 0.
+            """
+            .replacingOccurrences(of: "\n", with: " ")
+            RunLog.fail(message)
+            notify("Clipboard too large (\(raw.count) chars). Cap is \(maxChars).")
+            exit(1)
+        } else {
+            text = raw
         }
 
-        var scheduler = EventScheduler(config: .default, wpm: wpm)
+        let lineCount = text.split(whereSeparator: \.isNewline).count
+        let estMin = estimateMinutes(chars: text.count, wpm: wpm)
+        RunLog.info(
+            "clipboard chars=\(text.count) lines=\(lineCount) estMin=\(estMin)"
+        )
+
+        writePidFile()
+        defer { clearPidFile() }
+
+        if !dryRun {
+            PrecisionClock.sleep(milliseconds: 200)
+        }
+
+        let config = useResearch ? ChronometryConfig.research : ChronometryConfig.practical
+        var scheduler = EventScheduler(config: config, wpm: wpm)
         var rng = SystemRandomSource()
         let events = scheduler.generate(text: text, rng: &rng)
         RunLog.info("scheduled events=\(events.count)")
@@ -57,6 +100,43 @@ enum HumanizedTypeMain {
 
         let posted = play(events: events)
         RunLog.info("done posted=\(posted) of \(events.count)")
+        if posted == 0 {
+            notify("Typed 0 keystrokes. See ~/Library/Logs/humanized-type.log")
+            exit(1)
+        }
+    }
+
+    /// Returns true when this invocation only cancelled a previous typer.
+    private static func handleCancelIfAlreadyRunning() -> Bool {
+        let selfPid = ProcessInfo.processInfo.processIdentifier
+        guard let existing = readPidFile(), existing != selfPid else {
+            return false
+        }
+        if kill(existing, 0) == 0 {
+            RunLog.info("cancel previous typer pid=\(existing)")
+            kill(existing, SIGTERM)
+            clearPidFile()
+            notify("Humanized Type cancelled")
+            return true
+        }
+        clearPidFile()
+        return false
+    }
+
+    private static func writePidFile() {
+        let pid = String(ProcessInfo.processInfo.processIdentifier)
+        try? pid.write(to: pidFileURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func clearPidFile() {
+        try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
+    private static func readPidFile() -> Int32? {
+        guard let text = try? String(contentsOf: pidFileURL, encoding: .utf8) else {
+            return nil
+        }
+        return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private static func isAccessibilityTrusted() -> Bool {
@@ -76,13 +156,18 @@ enum HumanizedTypeMain {
         let startNs = PrecisionClock.nowNs()
         var posted = 0
         var failures = 0
+        let progressEvery = 25
 
-        for event in events {
-            let offsetMs = event.timestampMs - originMs
-            let deadlineNs = startNs + UInt64(max(0, offsetMs) * 1_000_000.0)
+        for (index, event) in events.enumerated() {
+            let offsetMs = max(0, event.timestampMs - originMs)
+            let offsetNs = UInt64(offsetMs * 1_000_000.0)
+            let deadlineNs = startNs &+ offsetNs
             PrecisionClock.sleepUntil(deadlineNs: deadlineNs)
             if KeyEventDispatcher.post(event: event) {
                 posted += 1
+                if posted == 1 {
+                    RunLog.info("first keystroke key=\(event.key) phase=\(event.phase.rawValue)")
+                }
             } else {
                 failures += 1
                 if failures == 1 {
@@ -90,6 +175,9 @@ enum HumanizedTypeMain {
                         "CGEvent post failed for key=\(event.key) phase=\(event.phase.rawValue)"
                     )
                 }
+            }
+            if (index + 1) % progressEvery == 0 {
+                RunLog.info("progress \(index + 1)/\(events.count) posted=\(posted)")
             }
         }
 
@@ -110,6 +198,22 @@ enum HumanizedTypeMain {
         return value
     }
 
+    private static func parseMaxChars(from args: [String]) -> Int? {
+        guard let index = args.firstIndex(of: "--max-chars"),
+              args.index(after: index) < args.endIndex,
+              let value = Int(args[args.index(after: index)]),
+              value >= 0
+        else {
+            return nil
+        }
+        return value
+    }
+
+    private static func estimateMinutes(chars: Int, wpm: Double) -> Int {
+        let charsPerMinute = max(wpm * 5.0, 1.0)
+        return Int((Double(chars) / charsPerMinute).rounded(.up))
+    }
+
     private static func writeTimingLog(_ samples: [TimingSample]) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("humanized-type-timing.csv")
@@ -126,15 +230,22 @@ enum HumanizedTypeMain {
     }
 
     private static func notify(_ message: String) {
-        let escaped = message.replacingOccurrences(of: "\"", with: "'")
+        let escaped = message
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = [
             "-e",
             "display notification \"\(escaped)\" with title \"Humanized Type\"",
         ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
+            DispatchQueue.global().async {
+                process.waitUntilExit()
+            }
         } catch {
             RunLog.fail("notification failed: \(error)")
         }

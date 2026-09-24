@@ -107,8 +107,40 @@ public struct ChronometryConfig: Sendable {
 
     public init() {}
 
-    /// Default ~65 WPM synthesizer profile.
-    public static let `default` = ChronometryConfig()
+    /// Full research-report midpoints (~65 WPM synthesizer baseline).
+    public static let research = ChronometryConfig()
+
+    /// Alias for research midpoints (tests / hermetic sampling).
+    public static let `default` = ChronometryConfig.research
+
+    /// Raycast productivity profile: snappy, light jitter, no error theater.
+    public static var practical: ChronometryConfig {
+        var config = ChronometryConfig()
+        config.motorMuMs = 55.0
+        config.motorSigmaMs = 12.0
+        config.motorTauMs = 18.0
+        config.crossHandSpeedupMs = 20.0
+        config.flightFloorMs = 18.0
+        config.holdGeometricMeanMs = 45.0
+        config.holdShiftMs = 15.0
+        config.holdMinMs = 20.0
+        config.holdMaxMs = 90.0
+        config.wordBoundaryMuMs = 40.0
+        config.wordBoundarySigmaMs = 10.0
+        config.wordBoundaryTauMs = 20.0
+        config.clauseMuMs = 80.0
+        config.clauseSigmaMs = 20.0
+        config.clauseTauMs = 30.0
+        // Keep a slight sentence beat without multi-second freezes.
+        config.sentenceParetoTMinMs = 120.0
+        config.sentenceParetoAlpha = 1.6
+        config.sentenceParetoTMaxMs = 280.0
+        config.errorProbability = 0.0
+        config.rolloverProbability = 0.25
+        config.fittsAMs = 40.0
+        config.fittsBMsPerBit = 30.0
+        return config
+    }
 
     /// Speed factor \(s = 60 / \mathrm{WPM}\) (larger = slower).
     public static func speedFactor(wpm: Double) -> Double {

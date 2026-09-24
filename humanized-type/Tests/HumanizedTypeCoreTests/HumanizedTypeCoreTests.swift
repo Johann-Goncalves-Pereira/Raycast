@@ -153,7 +153,7 @@ struct EventSchedulerTests {
 
     @Test("sentence boundary produces larger IKI than intra-word")
     func sentencePauseLarger() {
-        var config = ChronometryConfig.default
+        var config = ChronometryConfig.research
         config.errorProbability = 0
         var scheduler = EventScheduler(config: config, wpm: 65)
         var rng = SequenceRandomSource(Array(repeating: 0.5, count: 512))
@@ -165,6 +165,28 @@ struct EventSchedulerTests {
         if let sentence, let intra {
             #expect(sentence.ikiMs > intra.ikiMs)
         }
+    }
+
+    @Test("practical profile is faster than research on same digraph")
+    func practicalFasterThanResearch() {
+        let draws = Array(repeating: 0.5, count: 64)
+        var research = BiomechanicalEngine(config: .research)
+        var practical = BiomechanicalEngine(config: .practical)
+        var rngA = SequenceRandomSource(draws)
+        var rngB = SequenceRandomSource(draws)
+        let slow = research.digraphLatencyMs(
+            from: "t",
+            to: "h",
+            speedFactor: ChronometryConfig.speedFactor(wpm: 65),
+            rng: &rngA
+        )
+        let fast = practical.digraphLatencyMs(
+            from: "t",
+            to: "h",
+            speedFactor: ChronometryConfig.speedFactor(wpm: 160),
+            rng: &rngB
+        )
+        #expect(fast < slow)
     }
 
     @Test("error pipeline emits backspace tokens")

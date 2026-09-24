@@ -18,9 +18,8 @@ enum RunLog {
 
     private static func write(level: String, message: String) {
         let line = "\(timestamp()) \(level) \(message)\n"
-        fputs(line, stderr)
-        fflush(stderr)
-
+        // File only — the Raycast wrapper already redirects stderr to this path,
+        // so writing both would duplicate every line.
         let directory = fileURL.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(
@@ -38,6 +37,7 @@ enum RunLog {
             }
         } catch {
             fputs("FAIL could not write \(fileURL.path): \(error)\n", stderr)
+            fputs(line, stderr)
         }
     }
 

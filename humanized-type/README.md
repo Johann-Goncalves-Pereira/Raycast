@@ -40,9 +40,14 @@ pbcopy <<< 'Hello, world. This is a timing check.'
 Optional flags:
 
 ```bash
-./.build/release/humanized-type --wpm 55
-./.build/release/humanized-type --log-timing   # writes /tmp…/humanized-type-timing.csv
+./.build/release/humanized-type --wpm 120
+./.build/release/humanized-type --research          # slow research-accurate timing + errors
+./.build/release/humanized-type --max-chars 5000    # default cap is 5000; 0 = unlimited
+./.build/release/humanized-type --log-timing
+./.build/release/humanized-type --dry-run
 ```
+
+Default Raycast profile is **practical** (~160 WPM, short pauses, no typo injection). Press ⌥V again while typing to **cancel**.
 
 Validate (SwiftLint strict + tests + release build):
 
