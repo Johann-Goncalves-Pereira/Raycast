@@ -63,7 +63,13 @@ Validate (SwiftLint strict + tests + release build):
 4. Grant **Accessibility** to **Raycast** (System Settings → Privacy & Security → Accessibility).
 5. Copy text → focus the target field → run **Humanized Type**.
 
-The shell wrapper rebuilds the release binary automatically if it is missing.
+The shell wrapper rebuilds the release binary if it is missing, then **detaches** the typer and exits immediately. Raycast cancels script commands after about 30 seconds; a real clipboard takes longer than that, which is why ⌥V used to fail mid-type.
+
+Failure log (also written when Accessibility is missing or the clipboard is empty):
+
+```bash
+tail -f ~/Library/Logs/humanized-type.log
+```
 
 ---
 

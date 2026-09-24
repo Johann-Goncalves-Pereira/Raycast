@@ -12,43 +12,48 @@ enum KeyEventDispatcher {
 
     private static let source = CGEventSource(stateID: .hidSystemState)
 
-    static func post(event: ScheduledKeyEvent) {
+    /// Returns false when CoreGraphics refuses to create the event.
+    @discardableResult
+    static func post(event: ScheduledKeyEvent) -> Bool {
+        if source == nil {
+            return false
+        }
         if event.key == KeyboardTopology.backspaceToken {
-            postVirtualKey(keyDelete, keyDown: event.phase == .down)
-            return
+            return postVirtualKey(keyDelete, keyDown: event.phase == .down)
         }
 
-        guard let character = event.key.first else { return }
+        guard let character = event.key.first else { return false }
 
         switch character {
         case "\n", "\r":
-            postVirtualKey(keyReturn, keyDown: event.phase == .down)
+            return postVirtualKey(keyReturn, keyDown: event.phase == .down)
         case "\t":
-            postVirtualKey(keyTab, keyDown: event.phase == .down)
+            return postVirtualKey(keyTab, keyDown: event.phase == .down)
         default:
-            postUnicode(String(character), keyDown: event.phase == .down)
+            return postUnicode(String(character), keyDown: event.phase == .down)
         }
     }
 
-    private static func postVirtualKey(_ keyCode: CGKeyCode, keyDown: Bool) {
+    private static func postVirtualKey(_ keyCode: CGKeyCode, keyDown: Bool) -> Bool {
         guard let event = CGEvent(
             keyboardEventSource: source,
             virtualKey: keyCode,
             keyDown: keyDown
         ) else {
-            return
+            return false
         }
         event.post(tap: .cghidEventTap)
+        return true
     }
 
-    private static func postUnicode(_ string: String, keyDown: Bool) {
+    private static func postUnicode(_ string: String, keyDown: Bool) -> Bool {
         // Unicode injection works on key-down; key-up still required for pairing.
         guard let event = CGEvent(
             keyboardEventSource: source,
             virtualKey: 0,
             keyDown: keyDown
         ) else {
-            return
+            return false
         }
 
         var utf16 = Array(string.utf16)
@@ -61,5 +66,6 @@ enum KeyEventDispatcher {
             }
         }
         event.post(tap: .cghidEventTap)
+        return true
     }
 }
