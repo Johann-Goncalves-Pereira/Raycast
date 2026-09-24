@@ -78,6 +78,16 @@ public struct FocusFingerprint: Equatable, Sendable {
         return lhs == rhs
     }
 
+    /// Keystrokes follow the on-screen window. Another desktop's app is not this field.
+    public static func stillOnScreen(
+        lockedPID: Int32,
+        lockedWindowID: UInt32,
+        currentPID: Int32,
+        currentWindowID: UInt32
+    ) -> Bool {
+        lockedPID == currentPID && lockedWindowID == currentWindowID
+    }
+
     /// A nearby frame is not the same field. The captured element has to match.
     public static func stillOnField(
         frontmostPIDMatches: Bool,

@@ -1,4 +1,5 @@
 import ApplicationServices
+import CoreGraphics
 import Foundation
 import os
 
@@ -39,6 +40,30 @@ enum FocusWindow {
         }
         let window = unsafeBitCast(windowRef, to: AXUIElement.self)
         return id(of: window)
+    }
+
+    /// Frontmost normal window on the active desktop. This updates when you change Spaces.
+    static func onScreenFront() -> (pid: pid_t, windowID: UInt32)? {
+        let options = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+        guard let info = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        for window in info {
+            let layer = window[kCGWindowLayer as String] as? Int ?? 1
+            guard layer == 0 else {
+                continue
+            }
+            guard let owner = window[kCGWindowOwnerPID as String] as? Int,
+                  let number = window[kCGWindowNumber as String] as? UInt32,
+                  owner > 0,
+                  pid_t(owner) != ownPID
+            else {
+                continue
+            }
+            return (pid_t(owner), number)
+        }
+        return nil
     }
 }
 

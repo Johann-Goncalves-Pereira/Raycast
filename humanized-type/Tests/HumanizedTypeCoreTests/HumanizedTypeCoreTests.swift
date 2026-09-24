@@ -390,6 +390,24 @@ struct FocusFingerprintTests {
         #expect(!otherWindow)
     }
 
+    @Test("another desktop app is not the locked window")
+    func otherDesktop() {
+        let same = FocusFingerprint.stillOnScreen(
+            lockedPID: 10,
+            lockedWindowID: 100,
+            currentPID: 10,
+            currentWindowID: 100
+        )
+        let cursorOnOtherSpace = FocusFingerprint.stillOnScreen(
+            lockedPID: 10,
+            lockedWindowID: 100,
+            currentPID: 20,
+            currentWindowID: 200
+        )
+        #expect(same)
+        #expect(!cursorOnOtherSpace)
+    }
+
     @Test("different window id does not match")
     func differentWindowID() {
         let left = FocusFingerprint(

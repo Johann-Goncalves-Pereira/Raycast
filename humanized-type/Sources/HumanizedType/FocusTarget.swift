@@ -10,6 +10,8 @@ struct FocusTarget {
     var pid: pid_t
     var role: String
     var fingerprint: FocusFingerprint
+    /// Frontmost on-screen window when typing started. Other desktops do not match.
+    var onScreenWindowID: UInt32
     var description: String
     /// Snapshot of field text around the caret when AXValue is readable.
     var textSnapshot: TextSnapshot?
@@ -79,34 +81,6 @@ struct FocusTarget {
             return appFocused
         }
         return nil
-    }
-
-    /// True only when the captured AX element is still the focused field.
-    func isCurrentlyFocused() -> Bool {
-        let frontmostMatches = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-        let windowMatches = Self.windowStillMatches(lockedID: fingerprint.windowID, pid: pid)
-        guard let current = Self.captureBestFocused(verbose: false) else {
-            Self.logMismatch("no-focused-element front=\(frontmostMatches) window=\(windowMatches)")
-            return false
-        }
-        let elementEqual = CFEqual(current.element, element)
-        let fingerprintMatches = fingerprint.matches(current.fingerprint)
-        let focused = FocusFingerprint.stillOnField(
-            frontmostPIDMatches: frontmostMatches,
-            fingerprintMatches: fingerprintMatches,
-            elementEqual: elementEqual,
-            windowIDMatches: windowMatches
-        )
-        if !focused {
-            let frontID = FocusWindow.focusedWindowID(pid: pid).map(String.init) ?? "nil"
-            Self.logMismatch(
-                "front=\(frontmostMatches) window=\(windowMatches) " +
-                    "element=\(elementEqual) fingerprint=\(fingerprintMatches) " +
-                    "now=\(current.description) lockedWindow=\(fingerprint.windowID.map(String.init) ?? "nil") " +
-                    "frontWindow=\(frontID)"
-            )
-        }
-        return focused
     }
 
     /// Read AXValue + selection if the field exposes them.
@@ -181,6 +155,7 @@ struct FocusTarget {
         )
         let frame = frame(of: element)
         let windowID = FocusWindow.focusedWindowID(pid: pid) ?? FocusWindow.id(of: element)
+        let onScreenWindowID = FocusWindow.onScreenFront().map(\.windowID) ?? windowID ?? 0
         let fingerprint = FocusFingerprint(
             pid: pid,
             role: role,
@@ -205,29 +180,10 @@ struct FocusTarget {
             pid: pid,
             role: role,
             fingerprint: fingerprint,
+            onScreenWindowID: onScreenWindowID,
             description: description,
             textSnapshot: snapshot
         )
-    }
-
-    private static var didLogMismatch = false
-
-    private static func logMismatch(_ message: String) {
-        if didLogMismatch {
-            return
-        }
-        didLogMismatch = true
-        RunLog.info("focus mismatch \(message)")
-    }
-
-    private static func windowStillMatches(lockedID: UInt32?, pid: pid_t) -> Bool {
-        guard let lockedID else {
-            return true
-        }
-        guard let current = FocusWindow.focusedWindowID(pid: pid) else {
-            return false
-        }
-        return current == lockedID
     }
 
     private static func resolvedDocumentURL(
