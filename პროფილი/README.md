@@ -394,7 +394,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 ## Maintaining This Document
 
-**Update [`პროფილი-README.md`](პროფილი-README.md) whenever you change [`პროფილი.swift`](პროფილი.swift).** Treat the README as part of the same change — do not merge script changes without updating the docs.
+**Update [`README.md`](README.md) whenever you change [`პროფილი.swift`](პროფილი.swift).** Treat the README as part of the same change — do not merge script changes without updating the docs.
 
 ### When to update
 
