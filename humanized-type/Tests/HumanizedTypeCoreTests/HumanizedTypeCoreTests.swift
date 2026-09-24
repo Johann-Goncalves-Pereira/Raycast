@@ -399,6 +399,28 @@ struct FocusFingerprintTests {
         #expect(stillDocs)
     }
 
+    @Test("same window with a different tab URL does not deliver a virtual key")
+    func virtualKeyBlocksOtherTabURL() {
+        let otherTab = FocusFingerprint.shouldDeliverVirtualKey(
+            lockedWindowID: 100,
+            browserFocusedWindowID: 100,
+            lockedTabURL: "https://docs.google.com/document/d/locked",
+            activeTabURL: "https://example.com/other-tab"
+        )
+        #expect(!otherTab)
+    }
+
+    @Test("the same tab URL still receives a virtual key")
+    func virtualKeyAllowsSameTabURL() {
+        let sameTab = FocusFingerprint.shouldDeliverVirtualKey(
+            lockedWindowID: 100,
+            browserFocusedWindowID: 100,
+            lockedTabURL: "https://docs.google.com/document/d/locked",
+            activeTabURL: "https://docs.google.com/document/d/locked"
+        )
+        #expect(sameTab)
+    }
+
     @Test("another window of the same browser does not receive a virtual key")
     func virtualKeyBlocksOtherBrowserWindow() {
         let otherTab = FocusFingerprint.shouldDeliverVirtualKey(

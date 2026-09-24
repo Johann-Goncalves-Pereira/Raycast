@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "ES2022",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["src/background.ts", "src/tab-match.ts", "src/key-command.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

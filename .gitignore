@@ -1,4 +1,5 @@
 .DS_Store
 
 browser-spotlight/node_modules/
+humanized-type/browser-extension/node_modules/
 browser-spotlight/.raycast/

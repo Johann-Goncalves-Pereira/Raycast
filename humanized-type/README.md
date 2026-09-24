@@ -15,7 +15,7 @@ pauses, and optional error-correction loops).
 |----------|--------|
 | Raycast title | Humanized Type |
 | Mode | `silent` |
-| Runtime | CoreGraphics HID + Accessibility focus lock |
+| Runtime | Private virtual keyboard + Accessibility focus lock |
 | Default speed | ~190 WPM (practical) |
 | Error rate | ~2% alphanumeric substitutions |
 | Thinking pauses | 5–15 s every ~400–900 chars (pastes ≥ 200 chars) |
@@ -62,9 +62,22 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 After Raycast dismisses, the script locks that browser tab and types into it with a private virtual keyboard. It does not use your keyboard, and it does not pull the window forward.
 
 - Stay on that tab, or switch to another app or desktop → typing **continues in the original tab**.
-- Switch to another tab or field in that same browser → typing **pauses**. Other fields stay empty. Return to the original tab to resume.
+- Switch to another tab in that same window → the process-wide keyboard **stops**. The other tab stays empty and does not scroll. With the tab-lock extension loaded, the original tab keeps receiving text in the background. Without it, typing waits until you return to that tab.
 - Press any key **in that field** → typing **stops**. Keys in other apps do not stop it. Pressing ✦V again still cancels too.
 - If no text-like field can be captured, the run stops instead of spraying keystrokes.
+
+### Tab lock extension
+
+Chrome delivers a process-wide key to whichever tab is selected. The unpacked extension attaches the debugger to the locked tab only and sends each character there, even when another tab is in front. It does not activate the window and it does not type into any other tab.
+
+One-time setup:
+
+1. Build the extension (`./scripts/validate` from the repo root writes `humanized-type/browser-extension/dist`).
+2. In Chrome, open `chrome://extensions`, turn on Developer mode, and choose **Load unpacked**.
+3. Select `humanized-type/browser-extension/dist`.
+4. The first time a run attaches, accept Chrome’s prompt that the extension is debugging that tab.
+
+If the extension is not connected, Humanized Type waits instead of typing into the newly selected tab.
 
 Typos are intentional (~2%): you will see a neighbor key, then backspaces, then the correct character. When the field exposes `AXValue`, a final pass repairs a short mismatched suffix so the finished text matches the clipboard.
 

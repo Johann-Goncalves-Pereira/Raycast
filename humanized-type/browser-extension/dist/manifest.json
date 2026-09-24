@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Humanized Type Tab Lock",
+  "version": "1.0.0",
+  "description": "Types into the locked Docs tab only, even when another tab is selected.",
+  "permissions": ["debugger", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}

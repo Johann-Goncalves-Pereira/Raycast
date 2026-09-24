@@ -1,5 +1,5 @@
 {
   "version": 1,
   "profile": "strict",
-  "stacks": ["swift"]
+  "stacks": ["swift", "extension"]
 }

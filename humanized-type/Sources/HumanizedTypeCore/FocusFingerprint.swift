@@ -78,12 +78,17 @@ public struct FocusFingerprint: Equatable, Sendable {
         return lhs == rhs
     }
 
-    /// Virtual keys go to the locked browser only while that browser's own key window is unchanged.
-    /// Which app is in front does not matter.
+    /// Virtual keys go to the locked browser only while that window and its active tab are unchanged.
+    /// Which app is in front does not matter. A different tab in the same window does not receive a key.
     public static func shouldDeliverVirtualKey(
         lockedWindowID: UInt32?,
-        browserFocusedWindowID: UInt32?
+        browserFocusedWindowID: UInt32?,
+        lockedTabURL: String = "",
+        activeTabURL: String = ""
     ) -> Bool {
+        if !lockedTabURL.isEmpty, !activeTabURL.isEmpty, lockedTabURL != activeTabURL {
+            return false
+        }
         guard let lockedWindowID else {
             return true
         }

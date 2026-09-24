@@ -2,4 +2,5 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-exec "$ROOT/humanized-type/scripts/validate"
+"$ROOT/humanized-type/scripts/validate"
+"$ROOT/humanized-type/browser-extension/scripts/validate"

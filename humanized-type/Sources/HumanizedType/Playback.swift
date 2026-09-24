@@ -1,6 +1,11 @@
 import Foundation
 import HumanizedTypeCore
 
+private struct PlaybackClock {
+    var startNs: UInt64
+    var didNotifyPause: Bool
+}
+
 extension HumanizedTypeMain {
     static func play(
         events: [ScheduledKeyEvent],
@@ -11,17 +16,20 @@ extension HumanizedTypeMain {
             return 0
         }
         let originMs = first.timestampMs
-        var startNs = PrecisionClock.nowNs()
+        var clock = PlaybackClock(startNs: PrecisionClock.nowNs(), didNotifyPause: false)
         var posted = 0
         var failures = 0
-        var didNotifyPause = false
         var didNotifyAbort = false
         let progressEvery = 25
         let abortMonitor = UserKeyAbortMonitor.shared
         let directInsert = target.supportsDirectInsert()
+        TabTypingBridge.start(url: target.fingerprint.documentURL)
         abortMonitor.start()
         abortMonitor.setTargetFocused(true)
-        defer { abortMonitor.stop() }
+        defer {
+            abortMonitor.stop()
+            TabTypingBridge.stop()
+        }
 
         func stopIfUserKey() -> Bool {
             guard abortMonitor.isAborted else { return false }
@@ -40,7 +48,7 @@ extension HumanizedTypeMain {
 
             let offsetMs = max(0, event.timestampMs - originMs)
             let offsetNs = UInt64(offsetMs * 1_000_000.0)
-            let deadlineNs = startNs &+ offsetNs
+            let deadlineNs = clock.startNs &+ offsetNs
             PrecisionClock.sleepUntil(deadlineNs: deadlineNs)
 
             if stopIfUserKey() {
@@ -49,19 +57,19 @@ extension HumanizedTypeMain {
 
             abortMonitor.setTargetFocused(target.isCurrentlyFocused())
 
-            if !directInsert, !target.browserOwnsLockedWindow() {
-                startNs = waitUntilBrowserWindowReturns(
-                    target: target,
-                    abortMonitor: abortMonitor,
-                    didNotifyPause: &didNotifyPause,
-                    offsetNs: offsetNs
-                )
-                if stopIfUserKey() {
-                    break
-                }
+            let sent = deliverOne(
+                event: event,
+                target: target,
+                directInsert: directInsert,
+                abortMonitor: abortMonitor,
+                clock: &clock,
+                offsetNs: offsetNs
+            )
+            if sent == nil {
+                _ = stopIfUserKey()
+                break
             }
-
-            if deliver(event: event, target: target, directInsert: directInsert) {
+            if sent == true {
                 posted += 1
                 if posted == 1 {
                     RunLog.info("first keystroke key=\(event.key) phase=\(event.phase.rawValue)")
@@ -112,6 +120,44 @@ extension HumanizedTypeMain {
         RunLog.info("resumed: browser window is the locked tab")
         didNotifyPause = false
         return PrecisionClock.nowNs() &- offsetNs
+    }
+
+    private static func deliverOne(
+        event: ScheduledKeyEvent,
+        target: FocusTarget,
+        directInsert: Bool,
+        abortMonitor: UserKeyAbortMonitor,
+        clock: inout PlaybackClock,
+        offsetNs: UInt64
+    ) -> Bool? {
+        if deliverViaExtension(event: event, directInsert: directInsert) {
+            return true
+        }
+        if !directInsert, !target.browserOwnsLockedWindow() {
+            clock.startNs = waitUntilBrowserWindowReturns(
+                target: target,
+                abortMonitor: abortMonitor,
+                didNotifyPause: &clock.didNotifyPause,
+                offsetNs: offsetNs
+            )
+            if abortMonitor.isAborted {
+                return nil
+            }
+        }
+        return deliver(event: event, target: target, directInsert: directInsert)
+    }
+
+    private static func deliverViaExtension(
+        event: ScheduledKeyEvent,
+        directInsert: Bool
+    ) -> Bool {
+        guard !directInsert, TabTypingBridge.isExtensionConnected else {
+            return false
+        }
+        if event.phase == .down {
+            TabTypingBridge.enqueue(event.key)
+        }
+        return true
     }
 
     private static func deliver(

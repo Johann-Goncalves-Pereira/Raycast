@@ -61,9 +61,12 @@ extension FocusTarget {
     /// True while the locked browser's own key window is still the captured tab.
     /// Another app in front does not change this.
     func browserOwnsLockedWindow() -> Bool {
-        FocusFingerprint.shouldDeliverVirtualKey(
+        let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        return FocusFingerprint.shouldDeliverVirtualKey(
             lockedWindowID: fingerprint.windowID,
-            browserFocusedWindowID: FocusWindow.focusedWindowID(pid: pid)
+            browserFocusedWindowID: FocusWindow.focusedWindowID(pid: pid),
+            lockedTabURL: fingerprint.documentURL,
+            activeTabURL: BrowserLocation.activeURL(bundleIdentifier: bundle)
         )
     }
 
