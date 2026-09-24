@@ -1,0 +1,97 @@
+# Strict SwiftLint for humanized-type
+excluded:
+  - .build
+  - .swiftpm
+
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - fatal_error_message
+  - first_where
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - joined_default_parameter
+  - literal_expression_end_indentation
+  - operator_usage_whitespace
+  - overridden_super_call
+  - private_outlet
+  - redundant_nil_coalescing
+  - vertical_parameter_alignment_on_call
+
+disabled_rules:
+  - trailing_comma
+
+force_unwrapping:
+  severity: error
+
+force_cast:
+  severity: error
+
+force_try:
+  severity: error
+
+implicitly_unwrapped_optional:
+  severity: error
+
+todo:
+  severity: error
+
+empty_count:
+  severity: warning
+
+line_length:
+  warning: 120
+  error: 150
+  ignores_comments: true
+  ignores_urls: true
+
+type_body_length:
+  warning: 400
+  error: 600
+
+file_length:
+  warning: 600
+  error: 900
+
+function_body_length:
+  warning: 80
+  error: 120
+
+function_parameter_count:
+  warning: 6
+  error: 8
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25
+
+large_tuple:
+  warning: 3
+  error: 4
+
+identifier_name:
+  min_length:
+    error: 2
+  max_length:
+    warning: 50
+    error: 60
+  excluded:
+    - id
+    - x
+    - y
+    - n
+    - a
+    - b
+    - p
+    - mu
+    - tau
+    - dx
+    - dy
+    - u1
+    - u2
+    - bs
+    - w1
+    - w2
+    - w3
+
+reporter: "xcode"

@@ -1,0 +1,16 @@
+---
+description: Strict Swift quality bar for humanized-type and other Swift packages
+alwaysApply: true
+---
+
+# Swift — no shortcuts (strict)
+
+- NEVER use force unwrap (`!`), force cast (`as!`), `try!`, or IUOs
+  (`Type!`) in production code. Prefer `guard let` / `if let` / `Result`.
+- NEVER leave `TODO` / `FIXME` that SwiftLint would flag as error.
+- ALWAYS keep Core (pure timing / scheduling) free of AppKit / CGEvent so
+  unit tests stay hermetic.
+- ALWAYS run `scripts/validate` (SwiftLint `--strict`, `swift test`,
+  `swift build -c release`) before claiming done.
+- When changing sampler / digraph / error behavior: update SPM tests in the
+  same change.

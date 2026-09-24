@@ -1,0 +1,13 @@
+---
+description: USE WHEN formatting Swift or editing humanized-type
+alwaysApply: false
+---
+
+# Code style (Swift)
+
+- Prefer clear names over abbreviations except established math (`mu`, `tau`,
+  `sigma`) documented next to research constants.
+- Keep functions focused; extract helpers before hitting SwiftLint
+  `function_body_length` error (120).
+- Raycast Script Command wrappers stay thin: build/exec only; logic lives in
+  the SPM package.

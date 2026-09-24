@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PKG="$(cd "$(dirname "$0")/.." && pwd)"
+
+echo "==> SwiftLint (humanized-type)"
+if command -v swiftlint >/dev/null 2>&1; then
+  (cd "$PKG" && swiftlint lint --strict --config .swiftlint.yml)
+else
+  echo "error: swiftlint not found. Install with: brew install swiftlint" >&2
+  exit 1
+fi
+
+echo "==> swift test (humanized-type)"
+swift test --package-path "$PKG"
+
+echo "==> swift build -c release (humanized-type)"
+swift build -c release --package-path "$PKG"
+
+echo "==> validate OK"
