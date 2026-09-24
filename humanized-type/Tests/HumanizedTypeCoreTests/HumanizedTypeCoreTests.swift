@@ -370,15 +370,41 @@ struct FocusFingerprintTests {
         let same = FocusFingerprint.stillOnField(
             frontmostPIDMatches: true,
             fingerprintMatches: true,
-            elementEqual: true
+            elementEqual: true,
+            windowIDMatches: true
         )
         let otherField = FocusFingerprint.stillOnField(
             frontmostPIDMatches: true,
             fingerprintMatches: true,
-            elementEqual: false
+            elementEqual: false,
+            windowIDMatches: true
+        )
+        let otherWindow = FocusFingerprint.stillOnField(
+            frontmostPIDMatches: true,
+            fingerprintMatches: true,
+            elementEqual: true,
+            windowIDMatches: false
         )
         #expect(same)
         #expect(!otherField)
+        #expect(!otherWindow)
+    }
+
+    @Test("different window id does not match")
+    func differentWindowID() {
+        let left = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Browser",
+            windowID: 10
+        )
+        let right = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Browser",
+            windowID: 11
+        )
+        #expect(!left.matches(right))
     }
 }
 

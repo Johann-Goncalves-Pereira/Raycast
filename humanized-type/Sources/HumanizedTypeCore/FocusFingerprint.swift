@@ -30,19 +30,23 @@ public struct FocusFingerprint: Equatable, Sendable {
     public var windowTitle: String
     public var documentURL: String
     public var frame: FocusFrame?
+    /// Quartz window id of the field's window. Nil when the system did not report one.
+    public var windowID: UInt32?
 
     public init(
         pid: Int32,
         role: String,
         windowTitle: String = "",
         documentURL: String = "",
-        frame: FocusFrame? = nil
+        frame: FocusFrame? = nil,
+        windowID: UInt32? = nil
     ) {
         self.pid = pid
         self.role = role
         self.windowTitle = windowTitle
         self.documentURL = documentURL
         self.frame = frame
+        self.windowID = windowID
     }
 
     /// True when pid, role, window title, URL, and frame still describe one field.
@@ -52,10 +56,13 @@ public struct FocusFingerprint: Equatable, Sendable {
         if !role.isEmpty, !other.role.isEmpty, role != other.role {
             return false
         }
-        if !Self.sameOptionalText(documentURL, other.documentURL) {
+        if !documentURL.isEmpty, !other.documentURL.isEmpty, documentURL != other.documentURL {
             return false
         }
         if !Self.sameOptionalText(windowTitle, other.windowTitle) {
+            return false
+        }
+        if let lhs = windowID, let rhs = other.windowID, lhs != rhs {
             return false
         }
         if let lhs = frame, let rhs = other.frame {
@@ -75,8 +82,9 @@ public struct FocusFingerprint: Equatable, Sendable {
     public static func stillOnField(
         frontmostPIDMatches: Bool,
         fingerprintMatches: Bool,
-        elementEqual: Bool
+        elementEqual: Bool,
+        windowIDMatches: Bool
     ) -> Bool {
-        frontmostPIDMatches && fingerprintMatches && elementEqual
+        frontmostPIDMatches && fingerprintMatches && elementEqual && windowIDMatches
     }
 }

@@ -84,14 +84,29 @@ struct FocusTarget {
     /// True only when the captured AX element is still the focused field.
     func isCurrentlyFocused() -> Bool {
         let frontmostMatches = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        let windowMatches = Self.windowStillMatches(lockedID: fingerprint.windowID, pid: pid)
         guard let current = Self.captureBestFocused(verbose: false) else {
+            Self.logMismatch("no-focused-element front=\(frontmostMatches) window=\(windowMatches)")
             return false
         }
-        return FocusFingerprint.stillOnField(
+        let elementEqual = CFEqual(current.element, element)
+        let fingerprintMatches = fingerprint.matches(current.fingerprint)
+        let focused = FocusFingerprint.stillOnField(
             frontmostPIDMatches: frontmostMatches,
-            fingerprintMatches: fingerprint.matches(current.fingerprint),
-            elementEqual: CFEqual(current.element, element)
+            fingerprintMatches: fingerprintMatches,
+            elementEqual: elementEqual,
+            windowIDMatches: windowMatches
         )
+        if !focused {
+            let frontID = FocusWindow.focusedWindowID(pid: pid).map(String.init) ?? "nil"
+            Self.logMismatch(
+                "front=\(frontmostMatches) window=\(windowMatches) " +
+                    "element=\(elementEqual) fingerprint=\(fingerprintMatches) " +
+                    "now=\(current.description) lockedWindow=\(fingerprint.windowID.map(String.init) ?? "nil") " +
+                    "frontWindow=\(frontID)"
+            )
+        }
+        return focused
     }
 
     /// Read AXValue + selection if the field exposes them.
@@ -158,19 +173,27 @@ struct FocusTarget {
         let appElement = AXUIElementCreateApplication(pid)
         let role = stringAttribute(element, kAXRoleAttribute as String) ?? "unknown"
         let windowTitle = windowTitle(for: element, app: appElement)
-        let documentURL = documentURL(for: element, app: appElement)
+        let documentURL = resolvedDocumentURL(
+            for: element,
+            app: appElement,
+            pid: pid,
+            allowScript: verbose
+        )
         let frame = frame(of: element)
+        let windowID = FocusWindow.focusedWindowID(pid: pid) ?? FocusWindow.id(of: element)
         let fingerprint = FocusFingerprint(
             pid: pid,
             role: role,
             windowTitle: windowTitle,
             documentURL: documentURL,
-            frame: frame
+            frame: frame,
+            windowID: windowID
         )
         let snapshot = readTextSnapshot(of: element)
         let description =
             "source=\(source) pid=\(pid) role=\(role) " +
             "title=\(windowTitle) url=\(documentURL) " +
+            "window=\(windowID.map(String.init) ?? "nil") " +
             "axValue=\(snapshot != nil)"
         if verbose {
             RunLog.info("focus candidate \(description)")
@@ -185,6 +208,44 @@ struct FocusTarget {
             description: description,
             textSnapshot: snapshot
         )
+    }
+
+    private static var didLogMismatch = false
+
+    private static func logMismatch(_ message: String) {
+        if didLogMismatch {
+            return
+        }
+        didLogMismatch = true
+        RunLog.info("focus mismatch \(message)")
+    }
+
+    private static func windowStillMatches(lockedID: UInt32?, pid: pid_t) -> Bool {
+        guard let lockedID else {
+            return true
+        }
+        guard let current = FocusWindow.focusedWindowID(pid: pid) else {
+            return false
+        }
+        return current == lockedID
+    }
+
+    private static func resolvedDocumentURL(
+        for element: AXUIElement,
+        app: AXUIElement,
+        pid: pid_t,
+        allowScript: Bool
+    ) -> String {
+        let fromTree = documentURL(for: element, app: app)
+        if !fromTree.isEmpty {
+            return fromTree
+        }
+        // AppleScript is only for the initial capture. Polling it steals Chrome's front window.
+        guard allowScript else {
+            return ""
+        }
+        let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        return BrowserLocation.activeURL(bundleIdentifier: bundle)
     }
 
     private static func isAcceptable(_ target: FocusTarget) -> Bool {

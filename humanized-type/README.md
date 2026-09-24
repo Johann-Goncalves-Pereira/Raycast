@@ -59,7 +59,7 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 
 ### Focus pause
 
-After Raycast dismisses, the script locks the focused field. When that element accepts direct insertion, characters go only into it, even if you focus something else. Otherwise keystrokes pause until that same element is focused again. A similar frame is not treated as the same field. It **never steals focus**.
+After Raycast dismisses, the script locks the focused field by its window, tab URL, and text element. Switching to another window, tab, or browser pauses typing, so the new field receives nothing. A similar frame is not treated as the same field. It **never steals focus**. Return to the original field to resume.
 
 - Stay in that field → typing continues.
 - Switch desktop, app, window, tab, or field → typing **pauses**. Return to the original field to resume.

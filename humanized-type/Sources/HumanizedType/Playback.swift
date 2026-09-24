@@ -51,7 +51,7 @@ extension HumanizedTypeMain {
                 abortMonitor.setTargetFocused(target.isCurrentlyFocused())
             }
 
-            if !directInsert, event.phase == .down, !target.isCurrentlyFocused() {
+            if !directInsert, !target.isCurrentlyFocused() {
                 startNs = waitUntilFieldReturns(
                     target: target,
                     abortMonitor: abortMonitor,
