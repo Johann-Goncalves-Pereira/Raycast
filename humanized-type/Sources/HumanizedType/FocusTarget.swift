@@ -71,22 +71,28 @@ struct FocusTarget {
         return nil
     }
 
-    static func captureBestFocused() -> FocusTarget? {
-        if let system = captureFromSystemWide(), isAcceptable(system) {
+    static func captureBestFocused(verbose: Bool = true) -> FocusTarget? {
+        if let system = captureFromSystemWide(verbose: verbose), isAcceptable(system) {
             return system
         }
-        if let appFocused = captureFromFrontmostApp(), isAcceptable(appFocused) {
+        if let appFocused = captureFromFrontmostApp(verbose: verbose), isAcceptable(appFocused) {
             return appFocused
         }
         return nil
     }
 
-    /// True when the currently focused field matches this target's fingerprint.
+    /// True only for the same AX element captured at start (not a similar title).
     func isCurrentlyFocused() -> Bool {
-        guard let current = Self.captureBestFocused() else {
+        guard let current = Self.captureBestFocused(verbose: false) else {
             return false
         }
-        return fingerprint.matches(current.fingerprint)
+        guard CFEqual(current.element, element) else {
+            return false
+        }
+        if let lockedFrame = fingerprint.frame, let currentFrame = current.fingerprint.frame {
+            return lockedFrame.isClose(to: currentFrame)
+        }
+        return true
     }
 
     /// Read AXValue + selection if the field exposes them.
@@ -100,12 +106,12 @@ struct FocusTarget {
         return snap.prefix + source + snap.suffix
     }
 
-    private static func captureFromSystemWide() -> FocusTarget? {
+    private static func captureFromSystemWide(verbose: Bool) -> FocusTarget? {
         let system = AXUIElementCreateSystemWide()
-        return elementFromFocusedAttribute(of: system, source: "system")
+        return elementFromFocusedAttribute(of: system, source: "system", verbose: verbose)
     }
 
-    private static func captureFromFrontmostApp() -> FocusTarget? {
+    private static func captureFromFrontmostApp(verbose: Bool) -> FocusTarget? {
         guard let front = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
@@ -114,12 +120,13 @@ struct FocusTarget {
             return nil
         }
         let appElement = AXUIElementCreateApplication(pid)
-        return elementFromFocusedAttribute(of: appElement, source: "app:\(pid)")
+        return elementFromFocusedAttribute(of: appElement, source: "app:\(pid)", verbose: verbose)
     }
 
     private static func elementFromFocusedAttribute(
         of root: AXUIElement,
-        source: String
+        source: String,
+        verbose: Bool
     ) -> FocusTarget? {
         var focusedRef: CFTypeRef?
         let focusStatus = AXUIElementCopyAttributeValue(
@@ -128,11 +135,15 @@ struct FocusTarget {
             &focusedRef
         )
         guard focusStatus == .success, let focusedRef else {
-            RunLog.info("focus \(source) status=\(focusStatus.rawValue) empty")
+            if verbose {
+                RunLog.info("focus \(source) status=\(focusStatus.rawValue) empty")
+            }
             return nil
         }
         guard CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
-            RunLog.info("focus \(source) not an AXUIElement")
+            if verbose {
+                RunLog.info("focus \(source) not an AXUIElement")
+            }
             return nil
         }
         let element = unsafeBitCast(focusedRef, to: AXUIElement.self)
@@ -162,7 +173,9 @@ struct FocusTarget {
             "source=\(source) pid=\(pid) role=\(role) " +
             "title=\(windowTitle) url=\(documentURL) " +
             "axValue=\(snapshot != nil)"
-        RunLog.info("focus candidate \(description)")
+        if verbose {
+            RunLog.info("focus candidate \(description)")
+        }
 
         return FocusTarget(
             appElement: appElement,

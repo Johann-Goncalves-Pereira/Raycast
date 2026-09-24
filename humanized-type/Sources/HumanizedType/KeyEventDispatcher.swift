@@ -42,6 +42,7 @@ enum KeyEventDispatcher {
         ) else {
             return false
         }
+        stampSynthetic(event)
         event.post(tap: .cghidEventTap)
         return true
     }
@@ -65,7 +66,15 @@ enum KeyEventDispatcher {
                 )
             }
         }
+        stampSynthetic(event)
         event.post(tap: .cghidEventTap)
         return true
+    }
+
+    private static func stampSynthetic(_ event: CGEvent) {
+        event.setIntegerValueField(
+            .eventSourceUserData,
+            value: UserKeyAbortMonitor.syntheticUserData
+        )
     }
 }

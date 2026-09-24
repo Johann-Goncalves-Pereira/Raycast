@@ -59,15 +59,16 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 
 ### Focus pause
 
-After Raycast dismisses, the script captures the focused AX text field fingerprint (app, role, window title / URL). It **never steals focus** back to that window.
+After Raycast dismisses, the script captures that exact AX text element. It **never steals focus** and does not treat a similar title as the same field.
 
-- Stay in the field → typing continues.
-- Switch desktop, window, or tab → typing **pauses** (notification). Return to the original field to resume, or press ✦V again to cancel.
-- If no text-like field can be captured, the run stops instead of spraying keystrokes into the wrong place.
+- Stay in that field → typing continues.
+- Switch desktop, window, tab, or field → typing **pauses**. Return to the original field to resume.
+- Press any key → typing **stops**. Pressing ✦V again still cancels too.
+- If no text-like field can be captured, the run stops instead of spraying keystrokes.
 
 Typos are intentional (~2%): you will see a neighbor key, then backspaces, then the correct character. When the field exposes `AXValue`, a final pass repairs any leftover mismatch so the finished text matches the clipboard.
 
-Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. Pause still works via window title when available; end-repair is skipped when `AXValue` is missing.
+Caveat: Google Docs / some canvas editors expose a weak Accessibility tree, so end-repair is skipped when `AXValue` is missing. The field gate is the captured element itself, not the window title.
 
 Validate (SwiftLint strict + tests + release build):
 

@@ -22,7 +22,8 @@ public struct FocusFrame: Equatable, Sendable {
     }
 }
 
-/// Pure identity of a focused text field for pause/resume matching.
+/// Snapshot used in tests and logs.
+/// Live typing uses `CFEqual` on the captured AX element in FocusTarget, not this matcher.
 public struct FocusFingerprint: Equatable, Sendable {
     public var pid: Int32
     public var role: String
@@ -47,6 +48,9 @@ public struct FocusFingerprint: Equatable, Sendable {
     /// True when the currently focused element is the same field we started on.
     public func matches(_ other: FocusFingerprint) -> Bool {
         guard pid == other.pid else { return false }
+        if let lhs = frame, let rhs = other.frame, !lhs.isClose(to: rhs) {
+            return false
+        }
         if !role.isEmpty, !other.role.isEmpty, role != other.role {
             return false
         }

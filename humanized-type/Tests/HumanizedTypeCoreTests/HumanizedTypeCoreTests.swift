@@ -315,6 +315,23 @@ struct FocusFingerprintTests {
         )
         #expect(a.matches(b))
     }
+
+    @Test("different frame does not match")
+    func differentFrame() {
+        let left = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Conteúdo do documento",
+            frame: FocusFrame(x: 10, y: 20, width: 400, height: 200)
+        )
+        let right = FocusFingerprint(
+            pid: 7,
+            role: "AXTextArea",
+            windowTitle: "Conteúdo do documento",
+            frame: FocusFrame(x: 10, y: 80, width: 400, height: 200)
+        )
+        #expect(!left.matches(right))
+    }
 }
 
 @Suite("KeyboardTopology")
