@@ -20,6 +20,7 @@ enum HumanizedTypeMain {
         let useResearch = args.contains("--research")
         let wpm = parseWpm(from: args) ?? defaultWpm
         let maxChars = parseMaxChars(from: args) ?? defaultMaxChars
+        let inputFile = parseValue(after: "--input-file", in: args)
 
         if handleCancelIfAlreadyRunning() {
             exit(0)
@@ -44,7 +45,11 @@ enum HumanizedTypeMain {
             )
         }
 
-        let text = readClipboardOrExit(maxChars: maxChars, wpm: wpm)
+        let text = readTextOrExit(
+            inputFile: inputFile,
+            maxChars: maxChars,
+            wpm: wpm
+        )
         let lineCount = text.split(whereSeparator: \.isNewline).count
         let estMin = estimateMinutes(chars: text.count, wpm: wpm)
         RunLog.info("clipboard chars=\(text.count) lines=\(lineCount) estMin=\(estMin)")
@@ -67,12 +72,12 @@ enum HumanizedTypeMain {
         }
 
         PrecisionClock.sleep(milliseconds: 200)
-        guard let target = FocusTarget.captureAfterRaycastDismisses() else {
-            failAndExit(
-                "Could not capture focused input. Focus a text field, then press ⌥V again."
-            )
+        let target = FocusTarget.captureAfterRaycastDismisses()
+        if let target {
+            RunLog.info("focus lock \(target.description)")
+        } else {
+            RunLog.info("WARN focus lock unavailable; typing without lock")
         }
-        RunLog.info("focus lock \(target.description)")
 
         let posted = play(events: events, target: target)
         RunLog.info("done posted=\(posted) of \(events.count)")
@@ -88,12 +93,37 @@ enum HumanizedTypeMain {
         exit(1)
     }
 
-    private static func readClipboardOrExit(maxChars: Int, wpm: Double) -> String {
-        guard let raw = NSPasteboard.general.string(forType: .string),
-              !raw.isEmpty
-        else {
-            failAndExit("Clipboard is empty. Copy text, focus a field, then press ⌥V.")
+    private static func readTextOrExit(
+        inputFile: String?,
+        maxChars: Int,
+        wpm: Double
+    ) -> String {
+        let raw: String
+        if let inputFile {
+            do {
+                raw = try String(contentsOfFile: inputFile, encoding: .utf8)
+                RunLog.info("input-file chars=\(raw.count) path=\(inputFile)")
+                try? FileManager.default.removeItem(atPath: inputFile)
+            } catch {
+                RunLog.fail("input-file read failed: \(error)")
+                raw = readPasteboardText() ?? ""
+            }
+        } else {
+            raw = readPasteboardText() ?? ""
         }
+
+        let trimmedCheck = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCheck.isEmpty else {
+            let types = NSPasteboard.general.types?.map(\.rawValue).joined(separator: ",") ?? "none"
+            RunLog.fail("pasteboard types=\(types)")
+            failAndExit(
+                """
+                Clipboard is empty. Copy text, focus a field, \
+                then press your Raycast hotkey (✦V).
+                """
+            )
+        }
+
         if maxChars > 0, raw.count > maxChars {
             let minutes = estimateMinutes(chars: raw.count, wpm: wpm)
             failAndExit(
@@ -106,6 +136,38 @@ enum HumanizedTypeMain {
             )
         }
         return raw
+    }
+
+    private static func readPasteboardText() -> String? {
+        let board = NSPasteboard.general
+        if let plain = board.string(forType: .string),
+           !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return plain
+        }
+
+        if let rtf = board.data(forType: .rtf),
+           let attributed = NSAttributedString(
+            rtf: rtf,
+            documentAttributes: nil
+           ) {
+            let plain = attributed.string
+            if !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return plain
+            }
+        }
+
+        if let html = board.data(forType: .html),
+           let attributed = NSAttributedString(
+            html: html,
+            documentAttributes: nil
+           ) {
+            let plain = attributed.string
+            if !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return plain
+            }
+        }
+
+        return nil
     }
 
     /// Returns true when this invocation only cancelled a previous typer.
@@ -149,7 +211,7 @@ enum HumanizedTypeMain {
         return trusted
     }
 
-    private static func play(events: [ScheduledKeyEvent], target: FocusTarget) -> Int {
+    private static func play(events: [ScheduledKeyEvent], target: FocusTarget?) -> Int {
         guard let first = events.first else {
             RunLog.fail("scheduler produced zero events")
             return 0
@@ -167,7 +229,7 @@ enum HumanizedTypeMain {
             let deadlineNs = startNs &+ offsetNs
             PrecisionClock.sleepUntil(deadlineNs: deadlineNs)
 
-            if event.phase == .down {
+            if event.phase == .down, let target {
                 if target.refocus() {
                     refocusFailures = 0
                 } else {
@@ -210,25 +272,32 @@ enum HumanizedTypeMain {
     }
 
     private static func parseWpm(from args: [String]) -> Double? {
-        guard let index = args.firstIndex(of: "--wpm"),
-              args.index(after: index) < args.endIndex,
-              let value = Double(args[args.index(after: index)]),
-              value > 0
+        guard let value = parseValue(after: "--wpm", in: args),
+              let wpm = Double(value),
+              wpm > 0
         else {
             return nil
         }
-        return value
+        return wpm
     }
 
     private static func parseMaxChars(from args: [String]) -> Int? {
-        guard let index = args.firstIndex(of: "--max-chars"),
-              args.index(after: index) < args.endIndex,
-              let value = Int(args[args.index(after: index)]),
-              value >= 0
+        guard let value = parseValue(after: "--max-chars", in: args),
+              let maxChars = Int(value),
+              maxChars >= 0
         else {
             return nil
         }
-        return value
+        return maxChars
+    }
+
+    private static func parseValue(after flag: String, in args: [String]) -> String? {
+        guard let index = args.firstIndex(of: flag),
+              args.index(after: index) < args.endIndex
+        else {
+            return nil
+        }
+        return args[args.index(after: index)]
     }
 
     private static func estimateMinutes(chars: Int, wpm: Double) -> Int {

@@ -48,13 +48,20 @@ Optional flags:
 ./.build/release/humanized-type --dry-run
 ```
 
-Default Raycast profile is **practical** (~190 WPM, linguistic pauses, ~2% typos, 5–15s thinking pauses on long pastes). Press ⌥V again while typing to **cancel**.
+Default Raycast profile is **practical** (~190 WPM, linguistic pauses, ~2% typos, 5–15s thinking pauses on long pastes). Press your Raycast hotkey again while typing to **cancel**.
+
+### Hotkey (important)
+
+Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
+
+- ⌥V on many keyboard layouts inserts `√` and will fight the script.
+- In Raycast: Script Commands → Humanized Type → set Hotkey to the Raycast key (star) + V.
 
 ### Focus lock
 
-After Raycast dismisses, the script captures the focused AX text field and **re-focuses it before every key-down**. You can switch apps or click elsewhere; typing continues in the original field when the AX node remains valid.
+After Raycast dismisses, the script tries to capture the focused AX text field and **re-focuses it before every key-down**. If AX capture fails (common in some browsers/Docs), it logs a warning and still types into whatever is focused.
 
-Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. If the lock cannot be restored five times in a row, typing stops and a notification is shown (see `~/Library/Logs/humanized-type.log`).
+Caveat: Google Docs / some canvas editors expose a weak Accessibility tree. If a lock was acquired and then fails five times in a row, typing stops.
 
 Validate (SwiftLint strict + tests + release build):
 
@@ -71,11 +78,11 @@ Validate (SwiftLint strict + tests + release build):
 
 1. Build once: `swift build -c release --package-path humanized-type`
 2. In Raycast → **Extensions** → **Script Commands** → add this folder as a Script Directory (or link `humanized-type.sh`).
-3. Bind a hotkey (e.g. `⌘⇧V`).
-4. Grant **Accessibility** to **Raycast** (System Settings → Privacy & Security → Accessibility).
-5. Copy text → focus the target field → run **Humanized Type**.
+3. Bind hotkey to **✦ + V** (Raycast modifier). Do **not** use ⌥V (types `√`).
+4. Grant **Accessibility** to **Raycast** and **humanized-type** (System Settings → Privacy & Security → Accessibility).
+5. Copy text → focus the target field → press ✦V.
 
-The shell wrapper rebuilds the release binary if it is missing, then **detaches** the typer and exits immediately. Raycast cancels script commands after about 30 seconds; a real clipboard takes longer than that, which is why ⌥V used to fail mid-type.
+The shell wrapper snapshots the clipboard with `pbpaste`, rebuilds the release binary if missing, then **detaches** the typer and exits immediately (Raycast’s ~30s script timeout otherwise kills long runs).
 
 Failure log (also written when Accessibility is missing or the clipboard is empty):
 

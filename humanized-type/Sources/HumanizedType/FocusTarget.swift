@@ -16,34 +16,81 @@ struct FocusTarget {
         "com.raycast.macos.development",
     ]
 
-    /// Wait until Raycast / this binary is not frontmost, then capture focus.
+    private static let rejectedRoles: Set<String> = [
+        "AXApplication",
+        "AXSystemWide",
+    ]
+
+    /// Wait until Raycast is gone, then poll for a usable focused element.
     static func captureAfterRaycastDismisses(
-        timeoutMs: Double = 1_500
+        timeoutMs: Double = 3_000
     ) -> FocusTarget? {
         let deadline = Date().addingTimeInterval(timeoutMs / 1_000.0)
+
         while Date() < deadline {
-            if !isOwnOrRaycastFrontmost() {
-                break
+            if isOwnOrRaycastFrontmost() {
+                Thread.sleep(forTimeInterval: 0.05)
+                continue
             }
-            Thread.sleep(forTimeInterval: 0.05)
+
+            if let target = captureBestFocused() {
+                RunLog.info("focus capture ok \(target.description)")
+                return target
+            }
+
+            let front = NSWorkspace.shared.frontmostApplication
+            let name = front?.localizedName ?? "nil"
+            RunLog.info("focus capture retry frontmost=\(name)")
+            Thread.sleep(forTimeInterval: 0.08)
         }
-        // Brief settle so the previous app restores focus.
-        Thread.sleep(forTimeInterval: 0.12)
-        return captureFocused()
+
+        return captureBestFocused()
     }
 
-    static func captureFocused() -> FocusTarget? {
+    static func captureBestFocused() -> FocusTarget? {
+        if let system = captureFromSystemWide(), isAcceptable(system) {
+            return system
+        }
+        if let appFocused = captureFromFrontmostApp(), isAcceptable(appFocused) {
+            return appFocused
+        }
+        // Last resort: accept whatever focused element we got, even if role is odd.
+        return captureFromSystemWide() ?? captureFromFrontmostApp()
+    }
+
+    static func captureFromSystemWide() -> FocusTarget? {
         let system = AXUIElementCreateSystemWide()
+        return elementFromFocusedAttribute(of: system, source: "system")
+    }
+
+    static func captureFromFrontmostApp() -> FocusTarget? {
+        guard let front = NSWorkspace.shared.frontmostApplication else {
+            return nil
+        }
+        let pid = front.processIdentifier
+        if isOwnOrRaycast(pid: pid, bundleId: front.bundleIdentifier) {
+            return nil
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        return elementFromFocusedAttribute(of: appElement, source: "app:\(pid)")
+    }
+
+    private static func elementFromFocusedAttribute(
+        of root: AXUIElement,
+        source: String
+    ) -> FocusTarget? {
         var focusedRef: CFTypeRef?
         let focusStatus = AXUIElementCopyAttributeValue(
-            system,
+            root,
             kAXFocusedUIElementAttribute as CFString,
             &focusedRef
         )
         guard focusStatus == .success, let focusedRef else {
+            RunLog.info("focus \(source) status=\(focusStatus.rawValue) empty")
             return nil
         }
         guard CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
+            RunLog.info("focus \(source) not an AXUIElement")
             return nil
         }
         let element = unsafeBitCast(focusedRef, to: AXUIElement.self)
@@ -52,13 +99,17 @@ struct FocusTarget {
         guard AXUIElementGetPid(element, &pid) == .success, pid != 0 else {
             return nil
         }
+        if isOwnOrRaycast(pid: pid, bundleId: nil) {
+            return nil
+        }
 
         let appElement = AXUIElementCreateApplication(pid)
         let role = stringAttribute(element, kAXRoleAttribute as String) ?? "unknown"
         let title = stringAttribute(element, kAXTitleAttribute as String)
             ?? stringAttribute(element, kAXDescriptionAttribute as String)
             ?? ""
-        let description = "pid=\(pid) role=\(role) title=\(title)"
+        let description = "source=\(source) pid=\(pid) role=\(role) title=\(title)"
+        RunLog.info("focus candidate \(description)")
 
         return FocusTarget(
             appElement: appElement,
@@ -69,18 +120,27 @@ struct FocusTarget {
         )
     }
 
+    private static func isAcceptable(_ target: FocusTarget) -> Bool {
+        if rejectedRoles.contains(target.role) {
+            return false
+        }
+        // Prefer text-like roles, but allow unknown web/custom roles.
+        let preferredPrefixes = ["AXText", "AXCombo", "AXSearch", "AXWeb", "AXGroup"]
+        if preferredPrefixes.contains(where: { target.role.hasPrefix($0) }) {
+            return true
+        }
+        // Many editors report AXTextArea / AXTextField; also accept focused generic.
+        return target.role != "unknown"
+    }
+
     /// Activate the target app and restore keyboard focus to the captured element.
     @discardableResult
     func refocus() -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid) else {
             return false
         }
-        let activated = app.activate(options: [.activateIgnoringOtherApps])
-        if !activated {
-            // Still try AX focus; some apps report false even when usable.
-        }
+        _ = app.activate(options: [.activateIgnoringOtherApps])
 
-        // Prefer focusing the saved element itself.
         let setFocused = AXUIElementSetAttributeValue(
             element,
             kAXFocusedAttribute as CFString,
@@ -90,7 +150,6 @@ struct FocusTarget {
             return true
         }
 
-        // Fallback: ask the application to focus this UI element.
         let setAppFocused = AXUIElementSetAttributeValue(
             appElement,
             kAXFocusedUIElementAttribute as CFString,
@@ -103,14 +162,21 @@ struct FocusTarget {
         guard let front = NSWorkspace.shared.frontmostApplication else {
             return false
         }
-        if front.processIdentifier == ProcessInfo.processInfo.processIdentifier {
+        return isOwnOrRaycast(pid: front.processIdentifier, bundleId: front.bundleIdentifier)
+    }
+
+    private static func isOwnOrRaycast(pid: pid_t, bundleId: String?) -> Bool {
+        if pid == ProcessInfo.processInfo.processIdentifier {
             return true
         }
-        if let bundle = front.bundleIdentifier, raycastBundleIds.contains(bundle) {
+        if let bundleId, raycastBundleIds.contains(bundleId) {
             return true
         }
-        let name = front.localizedName?.lowercased() ?? ""
-        if name.contains("raycast") { return true }
+        if let app = NSRunningApplication(processIdentifier: pid),
+           let name = app.localizedName?.lowercased(),
+           name.contains("raycast") {
+            return true
+        }
         return false
     }
 

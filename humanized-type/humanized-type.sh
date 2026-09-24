@@ -11,13 +11,12 @@
 # @raycast.needsConfirmation false
 
 # Documentation:
-# @raycast.description Type clipboard text with humanized biomechanical timing
+# @raycast.description Type clipboard with humanized timing. Bind hotkey to Raycast ✦+V (not ⌥V).
 # @raycast.author Johann-Goncalves-Pereira
 # @raycast.authorURL https://raycast.com/Johann-Goncalves-Pereira
 
-# Raycast aborts script commands after ~30s (scriptCommands.runScript timeout).
-# Typing a real clipboard takes longer, so this wrapper detaches the typer
-# into its own session and returns immediately. Failures go to the log file.
+# Raycast aborts script commands after ~30s. This wrapper snapshots the clipboard,
+# detaches the typer, and returns immediately.
 
 set -euo pipefail
 
@@ -32,6 +31,7 @@ log() {
 
 fail() {
   printf '%s FAIL wrapper %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG"
+  /usr/bin/osascript -e "display notification \"$1\" with title \"Humanized Type\"" >/dev/null 2>&1 || true
   printf '%s\n' "$*"
   exit 1
 }
@@ -49,14 +49,31 @@ if [[ ! -x "$BIN" ]]; then
   fail "binary still missing at $BIN"
 fi
 
+# Snapshot clipboard before Raycast / focus churn can race the pasteboard.
+CLIP_FILE="$(mktemp "${TMPDIR:-/tmp}/humanized-type.XXXXXX")"
+if ! /usr/bin/pbpaste >"$CLIP_FILE" 2>/dev/null; then
+  rm -f "$CLIP_FILE"
+  fail "Could not read clipboard (pbpaste failed)."
+fi
+
+CLIP_BYTES="$(wc -c <"$CLIP_FILE" | tr -d ' ')"
+if [[ "$CLIP_BYTES" -eq 0 ]]; then
+  rm -f "$CLIP_FILE"
+  fail "Clipboard is empty. Copy text, focus a field, then press your Raycast hotkey (✦V)."
+fi
+
+log "clipboard snapshot bytes=$CLIP_BYTES file=$CLIP_FILE"
+
 # New session so Raycast does not kill the typer when this script exits.
-python3 - "$BIN" "$LOG" "$@" <<'PY'
+python3 - "$BIN" "$LOG" "$CLIP_FILE" "$@" <<'PY'
 import os
 import sys
 
 binary = sys.argv[1]
 log_path = sys.argv[2]
-rest = sys.argv[3:]
+clip_file = sys.argv[3]
+rest = sys.argv[4:]
+argv = [binary, "--input-file", clip_file, *rest]
 pid = os.fork()
 if pid > 0:
     raise SystemExit(0)
@@ -68,7 +85,7 @@ os.close(fd)
 devnull = os.open("/dev/null", os.O_RDONLY)
 os.dup2(devnull, 0)
 os.close(devnull)
-os.execv(binary, [binary, *rest])
+os.execv(binary, argv)
 PY
 
 log "detached typer"
