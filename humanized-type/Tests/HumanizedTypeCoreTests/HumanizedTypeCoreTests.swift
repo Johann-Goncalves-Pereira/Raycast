@@ -390,6 +390,24 @@ struct FocusFingerprintTests {
         #expect(!otherWindow)
     }
 
+    @Test("another app keeps the virtual keyboard on the locked window")
+    func virtualKeyIgnoresOtherApp() {
+        let stillDocs = FocusFingerprint.shouldDeliverVirtualKey(
+            lockedWindowID: 100,
+            browserFocusedWindowID: 100
+        )
+        #expect(stillDocs)
+    }
+
+    @Test("another window of the same browser does not receive a virtual key")
+    func virtualKeyBlocksOtherBrowserWindow() {
+        let otherTab = FocusFingerprint.shouldDeliverVirtualKey(
+            lockedWindowID: 100,
+            browserFocusedWindowID: 200
+        )
+        #expect(!otherTab)
+    }
+
     @Test("another desktop app is not the locked window")
     func otherDesktop() {
         let same = FocusFingerprint.stillOnScreen(

@@ -58,6 +58,15 @@ extension FocusTarget {
         RunLog.info("focus mismatch \(message)")
     }
 
+    /// True while the locked browser's own key window is still the captured tab.
+    /// Another app in front does not change this.
+    func browserOwnsLockedWindow() -> Bool {
+        FocusFingerprint.shouldDeliverVirtualKey(
+            lockedWindowID: fingerprint.windowID,
+            browserFocusedWindowID: FocusWindow.focusedWindowID(pid: pid)
+        )
+    }
+
     private static func windowStillMatches(lockedID: UInt32?, pid: pid_t) -> Bool {
         guard let lockedID else {
             return true

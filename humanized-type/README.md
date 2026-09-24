@@ -59,10 +59,10 @@ Bind **Humanized Type** to **✦ + V** (Raycast modifier), **not** ⌥V.
 
 ### Focus pause
 
-After Raycast dismisses, the script locks the browser window that is on screen. Switching desktops, to Cursor, or to any other window pauses typing, so those fields receive nothing. A similar frame is not treated as the same field. It **never steals focus**. Return to the original field to resume.
+After Raycast dismisses, the script locks that browser tab and types into it with a private virtual keyboard. It does not use your keyboard, and it does not pull the window forward.
 
-- Stay in that field → typing continues.
-- Switch desktop, app, window, tab, or field → typing **pauses**. Return to the original field to resume.
+- Stay on that tab, or switch to another app or desktop → typing **continues in the original tab**.
+- Switch to another tab or field in that same browser → typing **pauses**. Other fields stay empty. Return to the original tab to resume.
 - Press any key **in that field** → typing **stops**. Keys in other apps do not stop it. Pressing ✦V again still cancels too.
 - If no text-like field can be captured, the run stops instead of spraying keystrokes.
 

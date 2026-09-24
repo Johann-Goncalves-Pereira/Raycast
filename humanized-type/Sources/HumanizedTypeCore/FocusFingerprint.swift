@@ -78,6 +78,21 @@ public struct FocusFingerprint: Equatable, Sendable {
         return lhs == rhs
     }
 
+    /// Virtual keys go to the locked browser only while that browser's own key window is unchanged.
+    /// Which app is in front does not matter.
+    public static func shouldDeliverVirtualKey(
+        lockedWindowID: UInt32?,
+        browserFocusedWindowID: UInt32?
+    ) -> Bool {
+        guard let lockedWindowID else {
+            return true
+        }
+        guard let browserFocusedWindowID else {
+            return false
+        }
+        return lockedWindowID == browserFocusedWindowID
+    }
+
     /// Keystrokes follow the on-screen window. Another desktop's app is not this field.
     public static func stillOnScreen(
         lockedPID: Int32,

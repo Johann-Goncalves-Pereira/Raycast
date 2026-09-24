@@ -47,12 +47,10 @@ extension HumanizedTypeMain {
                 break
             }
 
-            if directInsert, event.phase == .down {
-                abortMonitor.setTargetFocused(target.isCurrentlyFocused())
-            }
+            abortMonitor.setTargetFocused(target.isCurrentlyFocused())
 
-            if !directInsert, !target.isCurrentlyFocused() {
-                startNs = waitUntilFieldReturns(
+            if !directInsert, !target.browserOwnsLockedWindow() {
+                startNs = waitUntilBrowserWindowReturns(
                     target: target,
                     abortMonitor: abortMonitor,
                     didNotifyPause: &didNotifyPause,
@@ -87,7 +85,7 @@ extension HumanizedTypeMain {
         return posted
     }
 
-    private static func waitUntilFieldReturns(
+    private static func waitUntilBrowserWindowReturns(
         target: FocusTarget,
         abortMonitor: UserKeyAbortMonitor,
         didNotifyPause: inout Bool,
@@ -96,19 +94,22 @@ extension HumanizedTypeMain {
         abortMonitor.setTargetFocused(false)
         if !didNotifyPause {
             didNotifyPause = true
-            RunLog.info("paused: focus left target field \(target.description)")
+            RunLog.info("paused: browser left locked window \(target.description)")
             notify(
                 """
-                Typing paused. Return to the original field to continue, \
-                or press any key there to stop.
+                Typing paused. The browser left the original tab. \
+                Switch back to that tab to continue.
                 """
             )
         }
-        while !target.isCurrentlyFocused() {
+        while !target.browserOwnsLockedWindow() {
+            abortMonitor.setTargetFocused(target.isCurrentlyFocused())
+            if abortMonitor.isAborted {
+                break
+            }
             PrecisionClock.sleep(milliseconds: 100)
         }
-        abortMonitor.setTargetFocused(true)
-        RunLog.info("resumed: focus returned to target field")
+        RunLog.info("resumed: browser window is the locked tab")
         didNotifyPause = false
         return PrecisionClock.nowNs() &- offsetNs
     }
@@ -119,7 +120,7 @@ extension HumanizedTypeMain {
         directInsert: Bool
     ) -> Bool {
         guard directInsert else {
-            return KeyEventDispatcher.post(event: event)
+            return KeyEventDispatcher.post(event: event, pid: target.pid)
         }
         guard event.phase == .down else {
             return true
