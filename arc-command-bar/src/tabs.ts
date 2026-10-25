@@ -1,7 +1,7 @@
 import { Application, open } from "@raycast/api";
 import { runAppleScript } from "@raycast/utils";
 import { BrowserDefinition } from "./browsers";
-import { TTL, cacheKey, readFresh, writeCache } from "./cache";
+import { TTL, cacheKey, readFresh, readStale, writeCache } from "./cache";
 import { Tab, domainFromUrl } from "./classify";
 
 const scriptListTabs = (browserName: string) => `
@@ -54,11 +54,17 @@ function parseTabs(raw: string | undefined): Tab[] {
     .filter((tab) => tab.url.length > 0);
 }
 
+/** Synchronous stale seed for Raycast List first paint. */
+export function peekCachedTabs(bundleId: string): Tab[] | undefined {
+  return readStale<Tab[]>(cacheKey("tabs", bundleId));
+}
+
 export async function getTabsForBrowser(app: Application): Promise<Tab[]> {
   const key = cacheKey("tabs", app.bundleId ?? app.name);
   const fresh = readFresh<Tab[]>(key, TTL.tabs);
   if (fresh) return fresh;
 
+  const stale = readStale<Tab[]>(key);
   try {
     const raw = await runAppleScript(scriptListTabs(app.name));
     const tabs = parseTabs(raw);
@@ -66,7 +72,7 @@ export async function getTabsForBrowser(app: Application): Promise<Tab[]> {
     return tabs;
   } catch (error) {
     console.error(`Failed to list tabs for ${app.name}`, error);
-    return [];
+    return stale ?? [];
   }
 }
 
@@ -113,6 +119,37 @@ tell application "${browser}"
   activate
 end tell
 `;
+
+/** Best-effort active tab: first window's active/current tab via AppleScript. */
+export async function getActiveTabForBrowser(
+  app: Application,
+  browser: BrowserDefinition,
+): Promise<Tab | undefined> {
+  const tabs = await getTabsForBrowser(app);
+  if (tabs.length === 0) return undefined;
+  try {
+    const script =
+      browser.engine === "webkit"
+        ? `
+tell application "${app.name}"
+  if (count of windows) is 0 then return ""
+  set t to current tab of front window
+  return (name of t) & "\\n" & (URL of t) & "\\n" & (id of front window) & "\\n" & (index of t)
+end tell`
+        : `
+tell application "${app.name}"
+  if (count of windows) is 0 then return ""
+  set t to active tab of front window
+  return (title of t) & "\\n" & (URL of t) & "\\n" & (id of front window) & "\\n" & (active tab index of front window)
+end tell`;
+    const raw = await runAppleScript(script);
+    const parsed = parseTabs(raw ? `${raw}\n\n` : "");
+    if (parsed[0]) return parsed[0];
+  } catch {
+    // fall through
+  }
+  return tabs[0];
+}
 
 export async function jumpToTab(
   app: Application,

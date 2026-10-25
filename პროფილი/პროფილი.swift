@@ -6,12 +6,14 @@
 // @raycast.mode silent
 
 // Optional parameters:
+// @raycast.icon icon.svg
+// @raycast.packageName Utilities
+// @raycast.needsConfirmation false
 
 // Documentation:
 // @raycast.description Open the Developer folder on terminal
 // @raycast.author Johann-Goncalves-Pereira
 // @raycast.authorURL https://raycast.com/Johann-Goncalves-Pereira
-// @raycast.packageName Utilities
 
 import AppKit
 import Foundation

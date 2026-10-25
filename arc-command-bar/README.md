@@ -1,6 +1,6 @@
 # Browser Spotlight — Arc-style Cmd+P for browsers
 
-Local Raycast extension. When a Chromium/WebKit browser is frontmost, **⌘P** opens an Arc-like command bar: jump to open tabs, browse history, search the web, site-scoped search, and (Chromium) extensions.
+Local Raycast extension. When a Chromium/WebKit browser is frontmost, **⌘P** opens an Arc-like command bar: **Switch to Tab** first, MRU zero-state, history, bookmarks, web/site search, portable browser commands, Supercopy, and inline math — without Arc-only shell features (Spaces, Little Arc, Split, Easels).
 
 ## Setup
 
@@ -88,24 +88,43 @@ While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **
 - Search engine + typeahead suggestions
 - **Excluded browsers** — checkboxes; excluded apps keep native ⌘P (Print). **Arc is never remapped** (it has its own command bar). Run **Apply Browser Exclusions** after changing them.
 
-Tabs, history, site engines, and extensions are cached between opens (stale-while-revalidate). The first Cmd+P after install still hits disk/AppleScript; later opens paint last results immediately, then refresh in the background.
+Tabs, history, bookmarks, site engines, and extensions use **stale-while-revalidate**: reopen paints the last cache immediately, then refreshes in the background. Typing uses an ~80ms filter debounce; suggestions stay at 200ms.
+
+## Command bar UX (Arc research)
+
+| Behavior | How |
+| --- | --- |
+| Empty state | **5 MRU open tabs**, suggested commands, recent history, bookmarks |
+| Switch to Tab | Matching open tabs rank/select **first** (Enter jumps; no duplicate) |
+| `/ ` prefix | Slash + space → **commands only** (tabs/history/web hidden) |
+| Site search | Keyword → **Tab** → red pill scope (unchanged) |
+| Supercopy | Copy URL strips `utm_*`, `fbclid`, `gclid`, …; Markdown copy available |
+| Inline answers | Math / temp / currency → **Enter copies** and dismisses |
+| SaaS | `New Google Doc`, Sheets, Meet, Notion, Figma, Linear, Repl |
+
+### Commands (portable subset)
+
+Navigation: New Window, Incognito, Reopen Closed Tab, Copy Current URL / Markdown / URLs, Back/Forward, Downloads, Close Tab, Minimize/Close Window, Quit, Find…  
+Other: Reload, Zoom In/Out/Actual, DevTools, Full Screen, History, Print, Save, Undo/Redo  
+Settings: Preferences, Manage Extensions, Add Extension  
+
+**Out of scope:** Spaces, Little Arc, Easel/Notes/Library/Capture, Split View, pin/reset Space, Clear Today, Archive, Instant Links (⇧Enter), ChatGPT-in-bar.
 
 ## Site search (Chrome / Arc style)
 
 When a Chromium-based browser is frontmost, Browser Spotlight reads your **active site-search shortcuts** and built-in search engines from that browser’s profile (`Web Data` → `keywords` table). This is the same list you manage in the browser under **Settings → Search engines and site search**.
 
-### History
+### History & bookmarks
 
-Chromium browsers also expose **recent / matching history** from the active profile (`History` → `urls`). With a query, the best history match appears **above** the Web (“new tab”) action, then more history below. Site-scoped search (Tab) filters history to that engine’s domains. Safari / Orion do not load history yet.
+Chromium profiles also expose **history** (`History` → `urls`) and **bookmarks** (`Bookmarks` JSON). Matching **open tabs** select first; otherwise the clean search row (or an inline answer) is selected — history never steals focus. **Tab** jumps to the first site/tab/extension/command action. Site-scoped search filters history to that engine’s domains. Safari / Orion do not load history or bookmarks yet.
 
 ### How to use
 
 1. Open Browser Spotlight (**⌘P** when a supported browser is focused).
-2. Type a site-search keyword from your browser — for example `youtube.com`, `g`, or `amazon`.
-3. Press **Tab** to scope search to that engine (the row shows the shortcut and a **Tab** hint).
-4. Type your query and press **Enter** to search on that site.
-
-Scoped mode shows a red engine badge (like Arc Spotlight). Press **⌫** on an empty query to exit scoped search.
+2. Empty bar → pick an MRU tab or a suggested command.
+3. Type a query → Switch to Tab if open; otherwise search / history / bookmarks / commands.
+4. Type `/ ` then a command name (e.g. `/ reload`) for the action filter.
+5. Site keyword → **Tab** to scope; **⌫** on empty query exits scoped search.
 
 ### What gets loaded
 

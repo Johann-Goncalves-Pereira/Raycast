@@ -13,6 +13,7 @@ export type CacheEntry<T> = {
 export const TTL = {
   tabs: 3_000,
   history: 30_000,
+  bookmarks: 60_000,
   engines: 5 * 60_000,
   extensions: 5 * 60_000,
 } as const;
@@ -39,7 +40,8 @@ function getDefaultStore(): CacheStore {
     try {
       // Lazy require so unit tests outside Raycast don't need @raycast/api.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { Cache } = require("@raycast/api") as typeof import("@raycast/api");
+      const { Cache } =
+        require("@raycast/api") as typeof import("@raycast/api");
       defaultStore = new Cache({ namespace: "browser-spotlight" });
     } catch {
       defaultStore = memoryStore();
@@ -53,14 +55,47 @@ export function setCacheStore(store: CacheStore | undefined): void {
   defaultStore = store;
 }
 
+export type CacheKind =
+  | "tabs"
+  | "history"
+  | "bookmarks"
+  | "engines"
+  | "extensions"
+  | "suggestions";
+
 export function cacheKey(
-  kind: "tabs" | "history" | "engines" | "extensions" | "suggestions",
+  kind: CacheKind,
   bundleIdOrQuery: string,
   extra?: string,
 ): string {
   return extra
     ? `${kind}:${bundleIdOrQuery}:${extra}`
     : `${kind}:${bundleIdOrQuery}`;
+}
+
+/**
+ * Stale-while-revalidate: return fresh data immediately, otherwise return stale
+ * while `loader` refreshes the cache. Always writes on a successful load.
+ */
+export function withStaleWhileRevalidate<T>(
+  key: string,
+  maxAgeMs: number,
+  loader: () => T,
+  store: CacheStore = getDefaultStore(),
+  now: number = Date.now(),
+): T {
+  const fresh = readFresh<T>(key, maxAgeMs, store, now);
+  if (fresh !== undefined) return fresh;
+
+  const stale = readStale<T>(key, store);
+  try {
+    const data = loader();
+    writeCache(key, data, store, now);
+    return data;
+  } catch (error) {
+    if (stale !== undefined) return stale;
+    throw error;
+  }
 }
 
 export function readCacheEntry<T>(

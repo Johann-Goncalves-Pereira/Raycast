@@ -15,6 +15,7 @@ Raycast script that mounts an encrypted DMG vault, launches Zen Browser with a s
 | Mode                | `silent`                              |
 | Language            | Swift (`#!/usr/bin/swift`)            |
 | Package             | Utilities                             |
+| Icon                | `icon.svg`                            |
 | Author              | Johann-Goncalves-Pereira              |
 
 The script stays alive in the background while Zen is open on a **secure profile** (mounted DMG). It listens for macOS sleep, screen lock, and Zen quit events, then tears down the session and ejects the encrypted volume.

@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BrowserDefinition } from "./browser-catalog";
-import { TTL, cacheKey, readFresh, writeCache } from "./cache";
+import { TTL, cacheKey, readFresh, readStale, writeCache } from "./cache";
 import { lastUsedProfileDir } from "./profile";
 
 export type BrowserKeywordEngine = {
@@ -155,10 +155,17 @@ function readKeywordsFromWebData(webDataPath: string): KeywordRow[] {
   }
 }
 
+/** Synchronous stale seed for Raycast List first paint. */
+export function peekCachedEngines(
+  bundleId: string,
+): BrowserKeywordEngine[] | undefined {
+  return readStale<BrowserKeywordEngine[]>(cacheKey("engines", bundleId));
+}
+
 /**
  * Search engines + active site-search shortcuts from the frontmost
  * Chromium/Arc browser profile (chrome://settings/searchEngines).
- * Skips SQLite copy when a fresh cache entry exists (TTL ~5 min).
+ * Fresh cache skips SQLite; otherwise reload and fall back to stale on error.
  */
 export function getBrowserSearchEngines(
   browser: BrowserDefinition,
@@ -169,13 +176,18 @@ export function getBrowserSearchEngines(
   const fresh = readFresh<BrowserKeywordEngine[]>(key, TTL.engines);
   if (fresh) return fresh;
 
+  const stale = readStale<BrowserKeywordEngine[]>(key);
   const profileDir = lastUsedProfileDir(browser);
-  if (!profileDir) return [];
+  if (!profileDir) return stale ?? [];
 
-  const webData = join(profileDir, "Web Data");
-  const engines = mapKeywordRowsToEngines(readKeywordsFromWebData(webData));
-  writeCache(key, engines);
-  return engines;
+  try {
+    const webData = join(profileDir, "Web Data");
+    const engines = mapKeywordRowsToEngines(readKeywordsFromWebData(webData));
+    writeCache(key, engines);
+    return engines;
+  } catch {
+    return stale ?? [];
+  }
 }
 
 /** Map Chromium keywords rows to site/search engines (exported for tests). */

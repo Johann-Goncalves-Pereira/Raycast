@@ -2,7 +2,7 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "browser-spotlight",
   "title": "Browser Spotlight",
-  "description": "Arc-style Command Bar for the frontmost Chromium/WebKit browser: jump to open tabs, search the web, site-scoped search, and extensions.",
+  "description": "Arc-style Command Bar for the frontmost Chromium/WebKit browser: Switch-to-Tab, history, bookmarks, commands, site search, and Supercopy.",
   "icon": "spotlight-icon.png",
   "author": "johann_goncalves_pereira",
   "license": "MIT",
@@ -18,7 +18,7 @@
     {
       "name": "search",
       "title": "Browser Spotlight",
-      "description": "Search open tabs, history, the web, sites, and extensions in the frontmost browser.",
+      "description": "Search tabs, history, bookmarks, commands, the web, sites, and extensions in the frontmost browser.",
       "mode": "view"
     },
     {
@@ -193,7 +193,7 @@
     "dev": "ray develop",
     "fix-lint": "ray lint --fix",
     "lint": "ray lint",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test src/browser-actions.test.ts src/browser-bookmarks.test.ts src/browser-engines.test.ts src/browser-history.test.ts src/cache.test.ts src/commands.test.ts src/inline-answers.test.ts src/result-order.test.ts src/site-search.test.ts src/supercopy.test.ts",
     "apply-karabiner": "node scripts/apply-karabiner.mjs",
     "fix-karabiner": "node scripts/fix-karabiner.mjs",
     "reinstall-karabiner": "node scripts/reinstall-karabiner.mjs",

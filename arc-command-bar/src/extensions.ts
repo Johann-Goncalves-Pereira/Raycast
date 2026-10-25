@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join, isAbsolute } from "path";
 import { BrowserDefinition, profileRootFor } from "./browsers";
-import { TTL, cacheKey, readFresh, writeCache } from "./cache";
+import { TTL, cacheKey, readFresh, readStale, writeCache } from "./cache";
 import { listProfileDirs } from "./profile";
 
 export type BrowserExtension = {
@@ -126,6 +126,13 @@ function extensionFromSettings(
   return { id, name, description, optionsUrl, detailsUrl };
 }
 
+/** Synchronous stale seed for Raycast List first paint. */
+export function peekCachedExtensions(
+  bundleId: string,
+): BrowserExtension[] | undefined {
+  return readStale<BrowserExtension[]>(cacheKey("extensions", bundleId));
+}
+
 export function getInstalledExtensions(
   browser: BrowserDefinition,
 ): BrowserExtension[] {
@@ -135,32 +142,38 @@ export function getInstalledExtensions(
   const fresh = readFresh<BrowserExtension[]>(key, TTL.extensions);
   if (fresh) return fresh;
 
+  const stale = readStale<BrowserExtension[]>(key);
   const root = profileRootFor(browser);
-  if (!root) return [];
+  if (!root) return stale ?? [];
 
-  const scheme = browser.urlScheme;
-  const byId = new Map<string, BrowserExtension>();
+  try {
+    const scheme = browser.urlScheme;
+    const byId = new Map<string, BrowserExtension>();
 
-  for (const profileDir of listProfileDirs(root)) {
-    for (const file of ["Secure Preferences", "Preferences"]) {
-      const prefs = readJsonLoose(join(profileDir, file));
-      if (!prefs) continue;
-      const extensions = prefs.extensions as
-        { settings?: Record<string, Record<string, unknown>> } | undefined;
-      const settings = extensions?.settings;
-      if (!settings) continue;
+    for (const profileDir of listProfileDirs(root)) {
+      for (const file of ["Secure Preferences", "Preferences"]) {
+        const prefs = readJsonLoose(join(profileDir, file));
+        if (!prefs) continue;
+        const extensions = prefs.extensions as
+          | { settings?: Record<string, Record<string, unknown>> }
+          | undefined;
+        const settings = extensions?.settings;
+        if (!settings) continue;
 
-      for (const [id, value] of Object.entries(settings)) {
-        if (byId.has(id)) continue;
-        const ext = extensionFromSettings(id, value, scheme, profileDir);
-        if (ext) byId.set(id, ext);
+        for (const [id, value] of Object.entries(settings)) {
+          if (byId.has(id)) continue;
+          const ext = extensionFromSettings(id, value, scheme, profileDir);
+          if (ext) byId.set(id, ext);
+        }
       }
     }
-  }
 
-  const list = Array.from(byId.values()).sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
-  writeCache(key, list);
-  return list;
+    const list = Array.from(byId.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    writeCache(key, list);
+    return list;
+  } catch {
+    return stale ?? [];
+  }
 }

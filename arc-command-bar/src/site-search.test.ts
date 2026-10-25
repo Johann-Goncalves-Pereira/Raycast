@@ -71,7 +71,9 @@ describe("matchingSiteEngines", () => {
         tabId: "1",
       },
     ]);
-    assert.ok(matches.some((e) => e.domains.includes("developers.raycast.com")));
+    assert.ok(
+      matches.some((e) => e.domains.includes("developers.raycast.com")),
+    );
   });
 });
 

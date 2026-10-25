@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BrowserDefinition } from "./browser-catalog";
-import { TTL, cacheKey, readFresh, writeCache } from "./cache";
+import { TTL, cacheKey, readFresh, readStale, writeCache } from "./cache";
 import { domainFromUrl } from "./classify";
 import { lastUsedProfileDir } from "./profile";
 
@@ -127,10 +127,15 @@ function readHistoryRows(historyPath: string): HistoryRow[] {
   }
 }
 
+/** Synchronous stale seed for Raycast List first paint. */
+export function peekCachedHistory(bundleId: string): HistoryItem[] | undefined {
+  return readStale<HistoryItem[]>(cacheKey("history", bundleId));
+}
+
 /**
  * Recent history from the frontmost Chromium browser profile.
  * WebKit browsers (Safari/Orion) return [].
- * Skips SQLite copy when a fresh cache entry exists (TTL ~30s).
+ * Fresh cache skips SQLite; otherwise reload and fall back to stale on error.
  */
 export function getBrowserHistory(browser: BrowserDefinition): HistoryItem[] {
   if (browser.engine === "webkit") return [];
@@ -139,13 +144,18 @@ export function getBrowserHistory(browser: BrowserDefinition): HistoryItem[] {
   const fresh = readFresh<HistoryItem[]>(key, TTL.history);
   if (fresh) return fresh;
 
+  const stale = readStale<HistoryItem[]>(key);
   const profileDir = lastUsedProfileDir(browser);
-  if (!profileDir) return [];
+  if (!profileDir) return stale ?? [];
 
-  const historyPath = join(profileDir, "History");
-  const items = mapHistoryRows(readHistoryRows(historyPath));
-  writeCache(key, items);
-  return items;
+  try {
+    const historyPath = join(profileDir, "History");
+    const items = mapHistoryRows(readHistoryRows(historyPath));
+    writeCache(key, items);
+    return items;
+  } catch {
+    return stale ?? [];
+  }
 }
 
 function matchesDomainFilter(item: HistoryItem, domains: string[]): boolean {

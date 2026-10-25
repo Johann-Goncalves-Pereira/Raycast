@@ -231,7 +231,9 @@ export async function fetchYouTubeSuggestions(
   if (!query.trim()) return [];
   try {
     const response = await fetch(
-      `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=${encodeURIComponent(query)}`,
+      `https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=${encodeURIComponent(
+        query,
+      )}`,
       { signal },
     );
     if (!response.ok) return [];

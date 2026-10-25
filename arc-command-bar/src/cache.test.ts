@@ -7,6 +7,7 @@ import {
   readFresh,
   readStale,
   setCacheStore,
+  withStaleWhileRevalidate,
   writeCache,
 } from "./cache";
 import {
@@ -60,12 +61,7 @@ describe("cache TTL helper", () => {
     const now = 1_000_000;
     writeCache(key, [{ url: "https://a.test" }], store, now);
 
-    const fresh = readFresh(
-      key,
-      TTL.history,
-      store,
-      now + TTL.history + 1,
-    );
+    const fresh = readFresh(key, TTL.history, store, now + TTL.history + 1);
     assert.equal(fresh, undefined);
   });
 
@@ -75,10 +71,7 @@ describe("cache TTL helper", () => {
     const now = 1_000_000;
     writeCache(key, [{ title: "Old" }], store, now);
 
-    const stale = readStale<{ title: string }[]>(
-      key,
-      store,
-    );
+    const stale = readStale<{ title: string }[]>(key, store);
     assert.deepEqual(stale, [{ title: "Old" }]);
     assert.equal(
       readFresh(key, TTL.tabs, store, now + TTL.tabs + 5_000),
@@ -89,7 +82,28 @@ describe("cache TTL helper", () => {
   it("ignores corrupt cache payloads", () => {
     const store = memoryStore();
     store.set(cacheKey("engines", "x"), "not-json");
-    assert.equal(readFresh(cacheKey("engines", "x"), TTL.engines, store), undefined);
+    assert.equal(
+      readFresh(cacheKey("engines", "x"), TTL.engines, store),
+      undefined,
+    );
+  });
+
+  it("withStaleWhileRevalidate returns stale when loader throws", () => {
+    const store = memoryStore();
+    const key = cacheKey("bookmarks", "com.example.Browser");
+    const now = 1_000_000;
+    writeCache(key, [{ title: "Stale" }], store, now);
+
+    const result = withStaleWhileRevalidate(
+      key,
+      TTL.bookmarks,
+      () => {
+        throw new Error("disk locked");
+      },
+      store,
+      now + TTL.bookmarks + 1,
+    );
+    assert.deepEqual(result, [{ title: "Stale" }]);
   });
 });
 
