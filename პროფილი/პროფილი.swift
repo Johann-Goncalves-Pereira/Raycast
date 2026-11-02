@@ -17,12 +17,20 @@
 
 import AppKit
 import Foundation
+import IOKit.pwr_mgt
 import LocalAuthentication
 import Security
 
 enum Paths {
     static let encryptedVault = NSString(string: "~/Library/Application Support/zen/Profiles/Profile.dmg").expandingTildeInPath
-    static let zenApp = "/Applications/Zen.app"
+    /// Prefer the SIP-safe home copy (fx-autoconfig / PiP). Fall back to /Applications.
+    static let zenApp: String = {
+        let homeCopy = NSString(string: "~/Applications/Zen.app").expandingTildeInPath
+        if FileManager.default.fileExists(atPath: homeCopy) {
+            return homeCopy
+        }
+        return "/Applications/Zen.app"
+    }()
     static let secureVolumeRoot = "/Volumes/.com.apple.zen.framework"
     static let secureProfile = secureVolumeRoot
     static let zenHostCache = "~/Library/Caches/app.zen-browser.zen"
@@ -31,14 +39,14 @@ enum Paths {
 
 enum Zen {
     static let bundleIdentifier = "app.zen-browser.zen"
-    static let processName = "Zen"
     static let screenLockedNotification = "com.apple.screenIsLocked"
 }
 
 enum SystemPaths {
     static let hdiutil = "/usr/bin/hdiutil"
-    static let open = "/usr/bin/open"
-    static let pkill = "/usr/bin/pkill"
+    static let kill = "/usr/bin/kill"
+    static let ps = "/bin/ps"
+    static let lsof = "/usr/sbin/lsof"
     static let volumesRoot = "/Volumes/"
 }
 
@@ -46,6 +54,50 @@ enum Log {
     static func status(_ message: String) { print("🔧 \(message)") }
     static func error(_ message: String) { print("❌ \(message)") }
     static func success(_ message: String) { print("✅ \(message)") }
+}
+
+enum Notification {
+    static func display(title: String, message: String) {
+        let escapedTitle = title
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let escapedMessage = message
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "display notification \"\(escapedMessage)\" with title \"\(escapedTitle)\""
+        _ = try? ProcessRunner.capture(
+            executable: "/usr/bin/osascript",
+            arguments: ["-e", script]
+        )
+    }
+}
+
+enum PowerManagement {
+    private static var assertionID: IOPMAssertionID = 0
+    private static var hasAssertion = false
+
+    static func acquireSleepAssertion(reason: String = "Securing Zen encrypted vault before system sleep") {
+        guard !hasAssertion else { return }
+        let type = kIOPMAssertionTypePreventSystemSleep as CFString
+        let level = IOPMAssertionLevel(kIOPMAssertionLevelOn)
+        let result = IOPMAssertionCreateWithName(
+            type,
+            level,
+            reason as CFString,
+            &assertionID
+        )
+        if result == kIOReturnSuccess {
+            hasAssertion = true
+            Log.status("Power assertion acquired: preventing sleep until vault is secured")
+        }
+    }
+
+    static func releaseSleepAssertion() {
+        guard hasAssertion else { return }
+        IOPMAssertionRelease(assertionID)
+        hasAssertion = false
+        Log.status("Power assertion released")
+    }
 }
 
 enum FileSystem {
@@ -230,9 +282,22 @@ enum DiskImage {
         }
     }
 
-    static func detach(at mountPoint: String) -> Bool {
-        for attempt in 1...3 {
-            Log.status("Detach attempt \(attempt)/3 at \(mountPoint)...")
+    /// Detaches only after secure Zen (and other holders) have released the volume.
+    /// In urgent mode (e.g. system sleep), termination is immediate and unmount is expedited.
+    static func detach(at mountPoint: String, urgent: Bool = false) -> Bool {
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: urgent)
+        let idleTimeout: TimeInterval = urgent ? 1.0 : 4.0
+        _ = waitUntilMountIdle(mountPoint, timeout: idleTimeout)
+
+        let maxAttempts = urgent ? 2 : 5
+        for attempt in 1...maxAttempts {
+            Log.status("Detach attempt \(attempt)/\(maxAttempts) at \(mountPoint)...")
+
+            if ZenApp.isSecureProfileInUse() {
+                Log.status("Secure Zen still holds the vault — terminating again before detach...")
+                _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: urgent)
+                if !urgent { Thread.sleep(forTimeInterval: 0.5) }
+            }
 
             do {
                 let (exitCode, output) = try ProcessRunner.capture(
@@ -247,21 +312,26 @@ enum DiskImage {
 
                 Log.error("Error ejecting DMG \(mountPoint). Status: \(exitCode). Output: \(output)")
 
-                if attempt < 3 {
-                    Log.status("Retrying detach in 1s (resource may still be busy)...")
-                    Thread.sleep(forTimeInterval: 1.0)
+                if attempt < maxAttempts {
+                    let delay: TimeInterval = urgent ? 0.2 : 1.0
+                    Log.status("Retrying detach in \(delay)s (resource may still be busy)...")
+                    Thread.sleep(forTimeInterval: delay)
                 }
             } catch {
                 Log.error("Failed to run eject command for \(mountPoint): \(error)")
 
-                if attempt < 3 {
-                    Log.status("Retrying detach in 1s (resource may still be busy)...")
-                    Thread.sleep(forTimeInterval: 1.0)
+                if attempt < maxAttempts {
+                    let delay: TimeInterval = urgent ? 0.2 : 1.0
+                    Thread.sleep(forTimeInterval: delay)
                 }
             }
         }
 
-        Log.status("Attempting forced detach...")
+        // Clean up any remaining Zen processes before forced detach
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
+        _ = waitUntilMountIdle(mountPoint, timeout: 0.5)
+
+        Log.status("Attempting forced detach for \(mountPoint)...")
 
         do {
             let (exitCode, output) = try ProcessRunner.capture(
@@ -280,6 +350,33 @@ enum DiskImage {
             Log.error("Failed to run forced eject command for \(mountPoint): \(error)")
             return false
         }
+    }
+
+    private static func mountHasOpenFiles(_ mountPoint: String) -> Bool {
+        do {
+            let (exitCode, output) = try ProcessRunner.capture(
+                executable: SystemPaths.lsof,
+                arguments: ["-t", mountPoint]
+            )
+            // lsof exits 1 when nothing is open — that is success for us.
+            if exitCode != 0 { return false }
+            return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    private static func waitUntilMountIdle(_ mountPoint: String, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        while Date() < deadline {
+            if !ZenApp.isSecureProfileInUse() && !mountHasOpenFiles(mountPoint) {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        return !ZenApp.isSecureProfileInUse() && !mountHasOpenFiles(mountPoint)
     }
 
     private static func parseMountPointFromAttachOutput(_ output: String) -> String? {
@@ -558,61 +655,214 @@ enum VaultCredentialSetup {
 }
 
 enum ZenApp {
-    static var runningInstances: [NSRunningApplication] {
-        NSWorkspace.shared.runningApplications.filter {
-            $0.bundleIdentifier == Zen.bundleIdentifier && !$0.isTerminated
-        }
+    static func runningApplication(pid: pid_t) -> NSRunningApplication? {
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              !app.isTerminated
+        else { return nil }
+        return app
     }
 
-    static var isRunning: Bool {
-        !runningInstances.isEmpty
+    static func isRunning(pid: pid_t) -> Bool {
+        runningApplication(pid: pid) != nil
     }
 
-    static func waitUntilLaunched(timeout: TimeInterval = 15) -> Bool {
+    /// True when the frontmost app is a process holding the encrypted vault profile.
+    static func isSecureProfileFrontmost() -> Bool {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return false }
+        return pidsUsingSecureProfile().contains(front.processIdentifier)
+    }
+
+    /// PIDs whose argv references the secure vault profile (main + helpers).
+    static func pidsUsingSecureProfile() -> [pid_t] {
+        pidsWhoseCommandContains(Paths.secureProfile)
+    }
+
+    static func isSecureProfileInUse() -> Bool {
+        !pidsUsingSecureProfile().isEmpty
+    }
+
+    static func waitUntilSecureProfileInUse(timeout: TimeInterval = 15) -> pid_t? {
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
-            if isRunning { return true }
+            if let pid = pidsUsingSecureProfile().first {
+                return pid
+            }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
         }
 
-        return isRunning
+        return pidsUsingSecureProfile().first
     }
 
-    static func forceTerminateAll() -> Bool {
-        let instances = runningInstances
+    static func waitUntilSecureProfileGone(timeout: TimeInterval = 10) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
 
-        if instances.isEmpty {
-            Log.status("Zen Browser is not running")
-            return true
-        }
-
-        instances.forEach { $0.forceTerminate() }
-
-        for _ in 0..<25 {
-            if !isRunning {
-                Log.success("Zen Browser process killed successfully")
-                return true
-            }
+        while Date() < deadline {
+            if !isSecureProfileInUse() { return true }
             Thread.sleep(forTimeInterval: 0.2)
         }
 
+        return !isSecureProfileInUse()
+    }
+
+    static func pidsHoldingMount(_ mountPoint: String) -> [pid_t] {
         do {
-            _ = try ProcessRunner.capture(
-                executable: SystemPaths.pkill,
-                arguments: ["-x", Zen.processName]
+            let (exitCode, output) = try ProcessRunner.capture(
+                executable: SystemPaths.lsof,
+                arguments: ["-t", mountPoint]
+            )
+            guard exitCode == 0 else { return [] }
+            return output
+                .components(separatedBy: .newlines)
+                .compactMap { line -> pid_t? in
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return pid_t(trimmed)
+                }
+        } catch {
+            return []
+        }
+    }
+
+    static func isZenProcess(pid: pid_t) -> Bool {
+        if let app = NSRunningApplication(processIdentifier: pid),
+           app.bundleIdentifier == Zen.bundleIdentifier {
+            return true
+        }
+        do {
+            let (_, output) = try ProcessRunner.capture(
+                executable: SystemPaths.ps,
+                arguments: ["-p", "\(pid)", "-o", "command="]
+            )
+            let lower = output.lowercased()
+            return lower.contains("zen.app") || lower.contains("macos/zen") || lower.contains("plugin-container")
+        } catch {
+            return false
+        }
+    }
+
+    /// Terminates every process using the secure profile path — not daily Zen.
+    static func terminateProcessesUsingSecureProfile(urgent: Bool = false) -> Bool {
+        var pids = Set(pidsUsingSecureProfile())
+        pids.formUnion(pidsHoldingMount(Paths.secureVolumeRoot).filter { isZenProcess(pid: $0) })
+
+        if pids.isEmpty {
+            Log.status("No secure Zen processes holding the vault")
+            return true
+        }
+
+        Log.status("Terminating secure Zen PIDs (urgent=\(urgent)): \(pids.sorted().map(String.init).joined(separator: ", "))")
+
+        for pid in pids {
+            runningApplication(pid: pid)?.forceTerminate()
+            kill(pid, urgent ? SIGKILL : SIGTERM)
+        }
+
+        if !urgent {
+            for _ in 0..<15 {
+                pids = Set(pidsUsingSecureProfile())
+                pids.formUnion(pidsHoldingMount(Paths.secureVolumeRoot).filter { isZenProcess(pid: $0) })
+                if pids.isEmpty {
+                    Log.success("Secure Zen processes released the vault")
+                    return true
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+
+        pids = Set(pidsUsingSecureProfile())
+        pids.formUnion(pidsHoldingMount(Paths.secureVolumeRoot).filter { isZenProcess(pid: $0) })
+        for pid in pids {
+            kill(pid, SIGKILL)
+        }
+
+        let waitTimeout: TimeInterval = urgent ? 1.0 : 3.0
+        if waitUntilSecureProfileGone(timeout: waitTimeout) {
+            Log.success("Secure Zen processes released the vault")
+            return true
+        }
+
+        Log.error("Secure Zen processes still holding the vault: \(pidsUsingSecureProfile())")
+        return false
+    }
+
+    /// Opens a new Zen instance and returns a PID that actually uses the secure profile path.
+    static func openNewInstance(profilePath: String?, timeout: TimeInterval = 15) -> pid_t? {
+        let before = Set(pidsUsingSecureProfile())
+        let appURL = URL(fileURLWithPath: Paths.zenApp)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = true
+
+        var arguments = ["-no-remote"]
+        if let profilePath {
+            arguments.append(contentsOf: ["--profile", profilePath])
+        }
+        configuration.arguments = arguments
+
+        var launchedApp: NSRunningApplication?
+        var launchError: Error?
+        var didComplete = false
+
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { app, error in
+            launchedApp = app
+            launchError = error
+            didComplete = true
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while !didComplete && Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+
+        if let launchError {
+            Log.error("Failed to open Zen Browser: \(launchError.localizedDescription)")
+            return nil
+        }
+
+        guard launchedApp != nil else {
+            Log.error("Zen Browser did not return a running application.")
+            return nil
+        }
+
+        // Prefer a PID whose argv contains the vault path — NSWorkspace's PID can be a short-lived stub.
+        while Date() < deadline {
+            let after = Set(pidsUsingSecureProfile())
+            let newcomers = after.subtracting(before)
+            if let pid = newcomers.sorted().first ?? after.sorted().first {
+                return pid
+            }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        }
+
+        if let fallback = launchedApp?.processIdentifier, isRunning(pid: fallback) {
+            Log.status("Falling back to NSWorkspace PID \(fallback) (profile path not yet visible in ps)")
+            return fallback
+        }
+
+        Log.error("Secure Zen process did not appear with profile path within the expected time.")
+        return nil
+    }
+
+    private static func pidsWhoseCommandContains(_ marker: String) -> [pid_t] {
+        do {
+            let (_, output) = try ProcessRunner.capture(
+                executable: SystemPaths.ps,
+                arguments: ["-axo", "pid=,args="]
             )
 
-            if !isRunning {
-                Log.success("Zen Browser process killed successfully")
-                return true
-            }
+            return output
+                .components(separatedBy: .newlines)
+                .compactMap { line -> pid_t? in
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty, trimmed.contains(marker) else { return nil }
 
-            Log.error("Failed to kill Zen Browser process")
-            return false
+                    let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                    guard let first = parts.first, let pid = pid_t(first) else { return nil }
+                    return pid
+                }
         } catch {
-            Log.error("Error killing Zen Browser process: \(error)")
-            return false
+            Log.error("Failed to list processes: \(error)")
+            return []
         }
     }
 }
@@ -622,11 +872,195 @@ enum SecureSessionEnd {
     case systemLockOrSleep
 }
 
+/// Drops ActivityWatch *window* events for encrypted Zen while it is frontmost.
+/// Daily Zen and every other app keep recording; AW does not need to be paused.
+enum ActivityWatchPrivacy {
+    private static let lookbackSeconds: TimeInterval = 5
+    private static let requestTimeout: TimeInterval = 1.5
+
+    private static var baseURLString: String {
+        if let env = ProcessInfo.processInfo.environment["ACTIVITYWATCH_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !env.isEmpty
+        {
+            return env.hasSuffix("/") ? String(env.dropLast()) : env
+        }
+        return "http://127.0.0.1:5600"
+    }
+
+    private static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// - Parameter notAfter: When set (trailing scrub after leaving encrypted Zen),
+    ///   only delete events whose timestamp is at or before this instant so the first
+    ///   seconds of daily Zen are not removed.
+    static func scrubEncryptedZenWindowEvents(notAfter: Date? = nil) {
+        guard let buckets = localWindowBucketIDs() else { return }
+
+        let startDate = Date().addingTimeInterval(-lookbackSeconds)
+        let startParam = isoFractional.string(from: startDate)
+
+        for bucketID in buckets {
+            guard let events = fetchEvents(bucketID: bucketID, start: startParam) else { continue }
+            for event in events where isEncryptedZenWindowEvent(event) {
+                if let notAfter, event.timestamp > notAfter {
+                    continue
+                }
+                deleteEvent(bucketID: bucketID, eventID: event.id)
+            }
+        }
+    }
+
+    private static func isEncryptedZenWindowEvent(_ event: AWEvent) -> Bool {
+        event.appName.compare("Zen", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+    }
+
+    private static func localWindowBucketIDs() -> [String]? {
+        guard let url = URL(string: "\(baseURLString)/api/0/buckets/"),
+              let data = httpData(url: url, method: "GET"),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        return json.keys.filter { key in
+            key.hasPrefix("aw-watcher-window_") && !key.contains("synced")
+        }.sorted()
+    }
+
+    private static func fetchEvents(bucketID: String, start: String) -> [AWEvent]? {
+        var components = URLComponents(string: "\(baseURLString)/api/0/buckets/\(bucketID)/events")
+        components?.queryItems = [
+            URLQueryItem(name: "start", value: start),
+            URLQueryItem(name: "limit", value: "100")
+        ]
+        guard let url = components?.url,
+              let data = httpData(url: url, method: "GET"),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return nil
+        }
+
+        return raw.compactMap { AWEvent(json: $0) }
+    }
+
+    private static func deleteEvent(bucketID: String, eventID: Int) {
+        guard let url = URL(string: "\(baseURLString)/api/0/buckets/\(bucketID)/events/\(eventID)") else {
+            return
+        }
+        _ = httpData(url: url, method: "DELETE")
+    }
+
+    private static func httpData(url: URL, method: String) -> Data? {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = requestTimeout
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: Data?
+        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            defer { semaphore.signal() }
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode)
+            else { return }
+            result = data ?? Data()
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + requestTimeout + 0.5)
+        return result
+    }
+
+    private struct AWEvent {
+        let id: Int
+        let appName: String
+        let timestamp: Date
+
+        init?(json: [String: Any]) {
+            guard let id = json["id"] as? Int else { return nil }
+            let data = json["data"] as? [String: Any]
+            let app = (data?["app"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let timestamp: Date
+            if let raw = json["timestamp"] as? String {
+                if let parsed = ActivityWatchPrivacy.isoFractional.date(from: raw)
+                    ?? ISO8601DateFormatter().date(from: raw)
+                {
+                    timestamp = parsed
+                } else {
+                    timestamp = Date()
+                }
+            } else {
+                timestamp = Date()
+            }
+            self.id = id
+            self.appName = app
+            self.timestamp = timestamp
+        }
+    }
+}
+
+final class ActivityWatchEncryptedZenFilter {
+    private let queue = DispatchQueue(label: "com.johann.zen.aw-privacy")
+    private var secureFrontmostUntil: Date?
+    private var lastScheduleAt = Date.distantPast
+    private var didAnnounce = false
+    private let minInterval: TimeInterval = 1.0
+
+    func tick() {
+        let secureFrontmost = ZenApp.isSecureProfileFrontmost()
+        let now = Date()
+        guard now.timeIntervalSince(lastScheduleAt) >= minInterval else { return }
+
+        if secureFrontmost {
+            if !didAnnounce {
+                Log.status("ActivityWatch: scrubbing encrypted Zen window events (other apps + daily Zen still record)")
+                didAnnounce = true
+            }
+            scheduleScrub(notAfter: nil)
+            secureFrontmostUntil = now
+            lastScheduleAt = now
+        } else if let until = secureFrontmostUntil {
+            // Catch the last heartbeat, but do not erase daily Zen that started after leave.
+            scheduleScrub(notAfter: until.addingTimeInterval(1.5))
+            secureFrontmostUntil = nil
+            lastScheduleAt = now
+        }
+    }
+
+    func flush() {
+        if let until = secureFrontmostUntil {
+            scheduleScrub(notAfter: until.addingTimeInterval(1.5))
+            secureFrontmostUntil = nil
+        } else {
+            scheduleScrub(notAfter: Date().addingTimeInterval(1.5))
+        }
+        // Allow in-flight HTTP to finish before vault teardown continues.
+        queue.sync {}
+    }
+
+    private func scheduleScrub(notAfter: Date?) {
+        queue.async {
+            ActivityWatchPrivacy.scrubEncryptedZenWindowEvents(notAfter: notAfter)
+        }
+    }
+}
+
 final class SecureZenSessionMonitor {
+    /// Seed PID from launch; session liveness is profile-path based (main + helpers).
+    private let securePid: pid_t
     private var workspaceObservers: [NSObjectProtocol] = []
     private var screenLockObserverToken: UnsafeMutableRawPointer?
     private var hasFinished = false
     private var endReason: SecureSessionEnd = .userQuitZen
+    private let activityWatchFilter = ActivityWatchEncryptedZenFilter()
+    private var mainPidExitedAt: Date?
+
+    init(securePid: pid_t) {
+        self.securePid = securePid
+    }
 
     func waitUntilSessionEnds() -> SecureSessionEnd {
         AppKitEventLoop.activate()
@@ -635,12 +1069,27 @@ final class SecureZenSessionMonitor {
 
         while !hasFinished {
             RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.25))
+            activityWatchFilter.tick()
 
-            if !hasFinished && !ZenApp.isRunning {
+            let mainRunning = ZenApp.isRunning(pid: securePid)
+            let secureInUse = ZenApp.isSecureProfileInUse()
+
+            if !hasFinished && !secureInUse && !mainRunning {
                 finish(with: .userQuitZen)
+            } else if !hasFinished && !mainRunning {
+                if let exitTime = mainPidExitedAt {
+                    if Date().timeIntervalSince(exitTime) > 1.5 {
+                        Log.status("Main Zen PID \(securePid) exited; reaping lingering helpers after grace period...")
+                        _ = ZenApp.terminateProcessesUsingSecureProfile()
+                        finish(with: .userQuitZen)
+                    }
+                } else {
+                    mainPidExitedAt = Date()
+                }
             }
         }
 
+        activityWatchFilter.flush()
         unregisterObservers()
         return endReason
     }
@@ -653,8 +1102,9 @@ final class SecureZenSessionMonitor {
 
     private func secureVaultOnSystemEvent() {
         guard !hasFinished else { return }
+        PowerManagement.acquireSleepAssertion()
         Log.status("System sleep/lock detected — securing vault...")
-        _ = ZenApp.forceTerminateAll()
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
         finish(with: .systemLockOrSleep)
     }
 
@@ -677,6 +1127,17 @@ final class SecureZenSessionMonitor {
             }
         )
 
+        workspaceObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Log.status("System wake detected — verifying vault state...")
+                self?.secureVaultOnSystemEvent()
+            }
+        )
+
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDistributedCenter(),
             screenLockObserverToken,
@@ -693,11 +1154,28 @@ final class SecureZenSessionMonitor {
                 queue: .main
             ) { [weak self] notification in
                 guard let self, !self.hasFinished else { return }
-                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                      app.bundleIdentifier == Zen.bundleIdentifier
+                guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
                 else { return }
 
-                self.finish(with: .userQuitZen)
+                let pid = app.processIdentifier
+                let wasSecure =
+                    pid == self.securePid
+                    || ZenApp.pidsUsingSecureProfile().contains(pid)
+
+                guard wasSecure else { return }
+
+                if !ZenApp.isSecureProfileInUse() {
+                    self.finish(with: .userQuitZen)
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                        guard let self, !self.hasFinished else { return }
+                        if ZenApp.isSecureProfileInUse() {
+                            Log.status("Terminating lingering helpers after Zen quit...")
+                            _ = ZenApp.terminateProcessesUsingSecureProfile()
+                        }
+                        self.finish(with: .userQuitZen)
+                    }
+                }
             }
         )
     }
@@ -733,87 +1211,91 @@ enum ZenBrowserLauncher {
     static func launch(
         profilePath: String?,
         session: Session
-    ) -> Bool {
+    ) -> (launched: Bool, endReason: SecureSessionEnd?) {
         guard FileSystem.exists(at: Paths.zenApp) else {
             Log.error("Zen Browser application not found at '\(Paths.zenApp)'.")
             Log.error("Please ensure Zen Browser is installed at the correct location.")
-            return false
+            return (false, nil)
         }
 
-        var arguments = [Paths.zenApp]
-
+        let resolvedProfile: String?
         if let profilePath, FileSystem.exists(at: profilePath) {
-            arguments.append(contentsOf: ["--args", "--profile", profilePath])
+            resolvedProfile = profilePath
             Log.status("Opening Zen Browser with profile: \(profilePath)")
         } else {
+            resolvedProfile = nil
             Log.status("Opening Zen Browser with default profile...")
         }
 
         if case .monitoredSecureVault = session {
-            Log.status("Zen Browser will open. The script will wait for it to be closed before continuing.")
+            Log.status("Zen Browser will open as a new instance. The script will wait for it to be closed before continuing.")
             Log.status("Monitoring for system sleep and screen lock events.")
         }
 
-        do {
-            let (exitCode, _) = try ProcessRunner.capture(
-                executable: SystemPaths.open,
-                arguments: arguments
-            )
+        AppKitEventLoop.activate()
 
-            switch session {
-            case .monitoredSecureVault:
-                guard ZenApp.waitUntilLaunched() else {
-                    Log.error("Zen Browser did not start within the expected time.")
-                    return false
-                }
+        guard let securePid = ZenApp.openNewInstance(profilePath: resolvedProfile) else {
+            Log.error("Zen Browser did not start within the expected time.")
+            return (false, nil)
+        }
 
-                let endReason = SecureZenSessionMonitor().waitUntilSessionEnds()
+        Log.status("Secure Zen process PID: \(securePid)")
 
-                switch endReason {
-                case .userQuitZen:
-                    Log.success("Zen Browser operation completed successfully.")
-                case .systemLockOrSleep:
-                    Log.success("Vault secured due to system sleep or lock.")
-                }
+        switch session {
+        case .monitoredSecureVault:
+            let endReason = SecureZenSessionMonitor(securePid: securePid).waitUntilSessionEnds()
 
-                return true
-
-            case .immediate:
-                if exitCode == 0 {
-                    Log.success("Zen Browser operation completed successfully.")
-                    return true
-                }
-
-                Log.error("Zen Browser exited with status \(exitCode).")
-                return false
+            switch endReason {
+            case .userQuitZen:
+                Log.success("Zen Browser operation completed successfully.")
+            case .systemLockOrSleep:
+                Log.success("Vault secured due to system sleep or lock.")
             }
-        } catch {
-            Log.error("Failed to open Zen Browser: \(error)")
-            return false
+
+            return (true, endReason)
+
+        case .immediate:
+            Log.success("Zen Browser operation completed successfully.")
+            return (true, nil)
         }
     }
 }
 
 enum SecureVaultWorkflow {
     static func run(at mountPoint: String) -> Bool {
+        defer {
+            PowerManagement.releaseSleepAssertion()
+        }
+
         Log.success("Profile successfully decrypted. Opening Zen Browser with secure profile...")
 
-        let zenLaunched: Bool
+        let launchResult: (launched: Bool, endReason: SecureSessionEnd?)
 
         if FileSystem.exists(at: Paths.secureProfile) {
             Log.status("Secure profile found at: \(Paths.secureProfile)")
-            zenLaunched = ZenBrowserLauncher.launch(
+            launchResult = ZenBrowserLauncher.launch(
                 profilePath: Paths.secureProfile,
                 session: .monitoredSecureVault
             )
         } else {
             Log.error("Secure profile not found at '\(Paths.secureProfile)'")
             Log.status("Opening Zen Browser without specific profile...")
-            zenLaunched = ZenBrowserLauncher.launch(
+            launchResult = ZenBrowserLauncher.launch(
                 profilePath: nil,
                 session: .monitoredSecureVault
             )
         }
+
+        guard launchResult.launched else {
+            return false
+        }
+
+        let isUrgent = launchResult.endReason == .systemLockOrSleep
+
+        Log.status("Zen session ended. Ensuring vault is released before eject...")
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: isUrgent)
+        let goneTimeout: TimeInterval = isUrgent ? 2 : 8
+        _ = ZenApp.waitUntilSecureProfileGone(timeout: goneTimeout)
 
         Log.status("Zen session ended. Purging host footprint...")
         HostFootprint.purgeZenHostCache()
@@ -821,11 +1303,20 @@ enum SecureVaultWorkflow {
 
         Log.status("Ejecting vault...")
 
-        if !DiskImage.detach(at: mountPoint) {
+        if !DiskImage.detach(at: mountPoint, urgent: isUrgent) {
             Log.error("Failed to eject DMG properly")
+            Notification.display(
+                title: "Zen Browser",
+                message: "❌ Warning: Failed to eject encrypted profile. Vault is still mounted!"
+            )
+            return false
         }
 
-        return zenLaunched
+        Notification.display(
+            title: "Zen Browser",
+            message: "🔒 Encrypted profile secured and ejected."
+        )
+        return true
     }
 }
 
@@ -836,6 +1327,10 @@ enum ProfileLauncher {
 
         guard FileSystem.exists(at: Paths.encryptedVault) else {
             Log.error("DMG file not found at \(Paths.encryptedVault)")
+            Notification.display(
+                title: "Zen Browser",
+                message: "❌ Encrypted vault not found at \(Paths.encryptedVault)"
+            )
             exit(1)
         }
 
@@ -861,6 +1356,10 @@ enum ProfileLauncher {
             Log.status("Touch ID accepted — mounting vault...")
             guard let mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: passphrase) else {
                 Log.error("Failed to mount vault")
+                Notification.display(
+                    title: "Zen Browser",
+                    message: "❌ Failed to mount encrypted vault."
+                )
                 exit(1)
             }
 
@@ -870,7 +1369,7 @@ enum ProfileLauncher {
             }
         }
 
-        Log.success("Zen Decrypt workflow completed successfully!")
+        Log.success("Zen Vault secured and ejected successfully!")
     }
 }
 
