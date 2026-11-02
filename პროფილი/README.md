@@ -104,29 +104,30 @@ sequenceDiagram
     participant Footprint as HostFootprint
     participant macOS
 
-    Script->>Zen: open Zen.app --profile secureVolumeRoot
-    Script->>Script: waitUntilLaunched
-    Script->>Monitor: waitUntilSessionEnds
+    Script->>Zen: NSWorkspace new instance -no-remote --profile secureVolumeRoot
+    Zen-->>Script: securePid
+    Script->>Monitor: waitUntilSessionEnds securePid
     Monitor->>Monitor: AppKitEventLoop.activate
     Monitor->>Monitor: register observers
 
     loop Every 0.25s RunLoop.default
-        Monitor->>Monitor: poll ZenApp.isRunning
+        Monitor->>Monitor: poll ZenApp.isRunning pid
     end
 
-    alt User quits Zen Cmd+Q
-        macOS-->>Monitor: didTerminateApplicationNotification
+    alt User quits secure Zen Cmd+Q
+        macOS-->>Monitor: didTerminateApplicationNotification for securePid
         Monitor-->>Script: userQuitZen
-    else Zen process gone polling fallback
+    else Secure process gone polling fallback
         Monitor-->>Script: userQuitZen
     else Screen lock or sleep
         macOS-->>Monitor: screenIsLocked / willSleep
-        Monitor->>Zen: ZenApp.forceTerminateAll
+        Monitor->>Zen: terminateProcessesUsingSecureProfile
         Monitor-->>Script: systemLockOrSleep
     end
 
+    Script->>Zen: terminateProcessesUsingSecureProfile again
     Script->>Footprint: purgeZenHostCache + scrubZenProfilesIni
-    Script->>Script: DiskImage.detach at mountPoint
+    Script->>Script: DiskImage.detach when mount idle
     Script->>Script: workflow complete
 ```
 
@@ -137,36 +138,39 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph triggers [Triggers vault teardown]
-        Quit[Zen quit<br/>didTerminateApplicationNotification]
-        Poll[ZenApp.isRunning false<br/>polling fallback]
+        Quit[Secure Zen quit<br/>didTerminate for securePid]
+        Poll[ZenApp.isRunning pid false<br/>polling fallback]
         Lock[Screen lock<br/>CFNotificationCenter com.apple.screenIsLocked]
         Sleep[System sleep<br/>NSWorkspace.willSleepNotification]
+        Wake[System wake<br/>NSWorkspace.didWakeNotification]
     end
 
     subgraph actions [Actions]
-        NormalStop[finish userQuitZen]
-        SecurityStop[ZenApp.forceTerminateAll then finish systemLockOrSleep]
+        NormalStop[Reap lingering helpers then finish userQuitZen]
+        SecurityStop[Acquire IOPMAssertion, urgent SIGKILL, finish systemLockOrSleep]
     end
 
     Quit --> NormalStop
     Poll --> NormalStop
     Lock --> SecurityStop
     Sleep --> SecurityStop
+    Wake --> SecurityStop
 
     NormalStop --> Purge[HostFootprint purge in SecureVaultWorkflow]
     SecurityStop --> Purge
 
-    Purge --> Eject[DiskImage.detach in SecureVaultWorkflow]
+    Purge --> Eject[DiskImage.detach with verified eject and desktop notification]
 ```
 
-| Event               | API                                                     | On trigger                                         |
-| ------------------- | ------------------------------------------------------- | -------------------------------------------------- |
-| Zen quit            | `NSWorkspace.didTerminateApplicationNotification`       | Finish monitor (`userQuitZen`)                     |
-| Zen gone (fallback) | `ZenApp.isRunning` poll every 0.25s                     | Finish monitor (`userQuitZen`)                     |
-| Screen lock         | `CFNotificationCenter` → `Zen.screenLockedNotification` | Force-terminate Zen → finish (`systemLockOrSleep`) |
-| System sleep        | `NSWorkspace.willSleepNotification`                     | Force-terminate Zen → finish (`systemLockOrSleep`) |
+| Event                      | API                                                     | On trigger                                                      |
+| -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------- |
+| Secure Zen quit            | `NSWorkspace.didTerminateApplicationNotification` matching `securePid` | Wait 1.0s grace period for helpers, reap, finish (`userQuitZen`) |
+| Secure Zen gone (fallback) | `ZenApp.isRunning(pid:)` poll every 0.25s               | Finish monitor (`userQuitZen`)                                  |
+| Screen lock                | `CFNotificationCenter` → `Zen.screenLockedNotification` | Force-terminate **secure PID only** → finish (`systemLockOrSleep`) |
+| System sleep               | `NSWorkspace.willSleepNotification`                     | Acquire `IOPMAssertion`, immediate `SIGKILL` → finish (`systemLockOrSleep`) |
+| System wake                | `NSWorkspace.didWakeNotification`                       | Safety audit: immediate teardown if vault remains mounted       |
 
-> **Note:** Security monitoring applies for every Zen session this script launches (`ZenBrowserLauncher.Session.monitoredSecureVault`).
+> **Note:** Security monitoring applies for every Zen session this script launches (`ZenBrowserLauncher.Session.monitoredSecureVault`). Quit/kill of a daily Zen instance does **not** end the secure session.
 
 ---
 
@@ -177,7 +181,7 @@ All paths are defined in `Paths` inside [`პროფილი.swift`](პრ�
 | Constant                 | Path                                                     | Purpose                                            |
 | ------------------------ | -------------------------------------------------------- | -------------------------------------------------- |
 | `Paths.encryptedVault`   | `~/Library/Application Support/zen/Profiles/Profile.dmg` | Encrypted vault image                              |
-| `Paths.zenApp`           | `/Applications/Zen.app`                                  | Zen Browser                                        |
+| `Paths.zenApp`           | `~/Applications/Zen.app` (fallback `/Applications/Zen.app`) | Zen Browser (home copy preferred for autoconfig) |
 | `Paths.secureVolumeRoot` | `/Volumes/.com.apple.zen.framework`                      | Hidden fixed DMG mount point (profile at DMG root) |
 | `Paths.secureProfile`    | Same as `secureVolumeRoot`                               | Zen profile path passed to `--profile`             |
 | `Paths.zenHostCache`     | `~/Library/Caches/app.zen-browser.zen`                   | Host-side Zen cache purged after secure session    |
@@ -188,7 +192,6 @@ Zen identifiers in `Zen`:
 | Constant              | Value                                          |
 | --------------------- | ---------------------------------------------- |
 | `zenBundleIdentifier` | `Zen.bundleIdentifier` (`app.zen-browser.zen`) |
-| `zenProcessName`      | `Zen.processName` (`Zen`)                      |
 
 Keychain identifiers in `VaultCredentialStore`:
 
@@ -243,7 +246,7 @@ When Touch ID is cancelled, fails, is unavailable, or the vault password is not 
 
 ### 7. Zen manual quit (secure session)
 
-- `SecureZenSessionMonitor` detects quit via notification or polling.
+- `SecureZenSessionMonitor` detects quit of the **secure PID** via notification or polling (other Zen processes are ignored).
 - Prints `Zen Browser operation completed successfully.`
 - Prints `Zen session ended. Purging host footprint...`
 - Removes `~/Library/Caches/app.zen-browser.zen` and scrubs secure entries from `profiles.ini`.
@@ -254,14 +257,17 @@ When Touch ID is cancelled, fails, is unavailable, or the vault password is not 
 
 - Monitor receives lock/sleep event.
 - Prints `System sleep/lock detected — securing vault...`
-- Force-terminates Zen via `NSRunningApplication.forceTerminate()` (falls back to `pkill -x Zen`).
+- Terminates **every process whose argv contains the secure profile path** (`SIGTERM` then `kill -9`). Daily Zen (other profile) is left alone.
+- Waits until those processes are gone before purge/eject.
 - Prints `Vault secured due to system sleep or lock.`
 - Purges host cache and scrubs `profiles.ini`.
-- Ejects DMG (with detach retry).
+- Ejects DMG (with detach retry). Never force-unmounts while the vault is still held — that would SIGBUS-crash Zen (`backing vnode was force unmounted`).
 
-### 9. Zen already running at start
+### 9. Zen already running at start (daily browser)
 
-- `open` may focus the existing Zen instance instead of spawning a new one.
+- Launches a **new** Zen process with `NSWorkspace` `createsNewApplicationInstance` and `-no-remote --profile <securePath>`.
+- Records the returned `processIdentifier` and scopes monitoring/kill to that PID.
+- Existing daily Zen windows keep running; lock/sleep during the secure session does not kill them.
 
 ### 10. Hidden mount point (OpSec)
 
@@ -269,7 +275,17 @@ When Touch ID is cancelled, fails, is unavailable, or the vault password is not 
 - `ps aux` shows a generic system-looking `--profile` path instead of `Profile Secure` / `j3wki3fc.Secure`.
 - Profile files live at the DMG root (not in a subfolder).
 
-### 11. One-time vault password setup (`--store-vault-password`)
+### 11. ActivityWatch — exclude encrypted Zen only
+
+While the secure session is open, `ActivityWatchEncryptedZenFilter` runs inside `SecureZenSessionMonitor`:
+
+- When **encrypted Zen** is frontmost, recent `aw-watcher-window` events with `app == Zen` are deleted via the local ActivityWatch API (`http://127.0.0.1:5600`, override with `ACTIVITYWATCH_URL`).
+- **Daily Zen** and every other app keep recording (the window watcher is never paused). Trailing scrub is timestamp-capped so the first seconds of daily Zen after you switch away are kept.
+- Synced/remote buckets are not touched.
+- If ActivityWatch is down, scrubbing is skipped silently.
+- Do **not** install the ActivityWatch web extension on the encrypted profile; this filter only scrubs the window watcher.
+
+### 12. One-time vault password setup (`--store-vault-password`)
 
 Store the DMG encryption password in Keychain, protected by Touch ID:
 
@@ -292,32 +308,36 @@ Copy the vault password first (for example from Proton Pass), then run the comma
 
 ```mermaid
 flowchart TD
-    KillZen[ZenApp.forceTerminateAll] --> FindApps[runningInstances by bundle ID]
-    FindApps -->|None| DoneOK[Return true — not running]
-    FindApps -->|Found| ForceTerm[forceTerminate on each]
+    KillZen[terminateProcessesUsingSecureProfile] --> PsScan["ps: argv contains secureProfile"]
+    PsScan -->|None| DoneOK[Return true — vault free]
+    PsScan -->|Found| ForceTerm[forceTerminate plus SIGTERM each PID]
     ForceTerm --> WaitLoop[Poll up to 5s]
     WaitLoop -->|Gone| DoneOK2[Return true]
-    WaitLoop -->|Still running| Pkill[pkill -x Zen]
-    Pkill -->|Gone| DoneOK3[Return true]
-    Pkill -->|Still running| DoneFail[Return false]
+    WaitLoop -->|Still running| KillDashNine["kill -9 each remaining PID"]
+    KillDashNine -->|Gone| DoneOK3[Return true]
+    KillDashNine -->|Still running| DoneFail[Return false]
 ```
 
----
+Never uses `pkill -x Zen`. Session liveness and kill targets are **profile-path** based so daily Zen stays up and helpers holding the vault are included.
 
 ## DMG Detach Strategy
 
+Force-unmounting while Zen still has mmap'd profile files causes `EXC_BAD_ACCESS (SIGBUS)` / `backing vnode was force unmounted`. Detach never force-unmounts under a live vault holder.
+
 ```mermaid
 flowchart TD
-    DetachStart[DiskImage.detach] --> AttemptLoop[Attempt 1 to 3 hdiutil detach]
+    DetachStart[DiskImage.detach] --> KillSecure[terminateProcessesUsingSecureProfile]
+    KillSecure --> WaitIdle[Wait mount idle via lsof]
+    WaitIdle --> AttemptLoop[Attempt 1 to 5 soft hdiutil detach]
     AttemptLoop -->|Success| DoneOK[Return true]
     AttemptLoop -->|Fail| Wait1s[Sleep 1s then retry]
     Wait1s --> AttemptLoop
-    AttemptLoop -->|All 3 failed| ForceDetach["hdiutil detach -force"]
+    AttemptLoop -->|All 5 failed| StillBusy{Secure profile or open files?}
+    StillBusy -->|Yes| RefuseForce[Refuse force — return false]
+    StillBusy -->|No| ForceDetach["hdiutil detach -force"]
     ForceDetach -->|Success| DoneForce[Return true]
     ForceDetach -->|Fail| DoneFail[Return false]
 ```
-
-Handles "Resource busy" races when Zen releases file handles slowly after quit or force-terminate.
 
 ---
 
@@ -335,8 +355,8 @@ Raycast `silent` mode surfaces this output in the Raycast log / terminal when ru
 
 ## Dependencies & Requirements
 
-- **macOS** with `hdiutil`, `open`, `pkill`, `pgrep`
-- **Zen Browser** at `/Applications/Zen.app`
+- **macOS** with `hdiutil`, `kill`, `ps`, `lsof`
+- **Zen Browser** at `~/Applications/Zen.app` (falls back to `/Applications/Zen.app`)
 - **Encrypted DMG** at the configured `dmgPath`
 - **AppKit** — imported for `NSWorkspace`, `NSRunningApplication`, run loop, and screen-lock notifications
 - **LocalAuthentication** — Touch ID prompt for Keychain vault unlock
@@ -359,14 +379,19 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 | Cancel Touch ID                                                     | Logs abort and exits 0; no mount, no Zen, no password dialog                                  |
 | Touch ID unavailable / password not in Keychain                     | Same as cancel: abort, exit 0                                                                 |
 | Wrong stored Keychain password                                      | Mount fails, script exits 1                                                                   |
-| Mount DMG → use Zen → Cmd+Q                                         | Host cache purged, profiles.ini scrubbed, DMG ejects, script exits successfully               |
+| Mount DMG → use Zen → Cmd+Q                                         | Lingering helpers reaped; DMG cleanly ejects; desktop notification displayed; exits 0         |
 | Already-mounted DMG path                                            | Skips Touch ID, monitors, purges footprint, ejects on quit                                    |
-| Lock screen (⌃⌘Q) during secure session                             | Zen killed, footprint purged, DMG ejected                                                     |
-| Close lid / sleep during secure session                             | Zen killed, footprint purged, DMG ejected                                                     |
-| Missing DMG file                                                    | Script exits with code 1                                                                      |
-| Quick Cmd+Q after browsing                                          | Detach retry succeeds despite busy resource                                                   |
+| Lock screen (⌃⌘Q) during secure session                             | Secure PID killed only; daily Zen stays; footprint purged; DMG ejected; notification shown     |
+| Close lid / sleep during secure session                             | IOPMAssertion holds sleep; urgent SIGKILL; DMG ejected before sleep; no leftover mount        |
+| Wake machine after sleep                                            | didWakeNotification safety net verifies vault is detached; clean state confirmed             |
+| Daily Zen already open → run პროფილი                                | Second Zen process with secure profile; daily Zen stays                                       |
+| Quit daily Zen during secure session                                | Secure session continues; monitor does not end early                                          |
+| Cmd+Q only the secure window                                        | Session ends, vault ejects; daily Zen stays; notification confirms ejection                   |
+| Missing DMG file                                                    | Script displays error notification and exits with code 1                                      |
+| Quick Cmd+Q after browsing                                          | Detach retry succeeds despite busy resource; notification shown                               |
+| Detach failure fallback                                             | Forced detach executes; if failed, loud warning notification shown and script exits 1        |
 | After secure session                                                | `~/Library/Caches/app.zen-browser.zen` removed; no `.com.apple.zen.framework` in profiles.ini |
-| `ps aux` during secure session                                      | Shows `/Volumes/.com.apple.zen.framework`, not `Profile Secure`                               |
+| `ps aux` during secure session                                      | Shows `/Volumes/.com.apple.zen.framework`, not `Profile Secure`; two Zen PIDs if daily open   |
 | Run from CLI: `./პროფილი.swift`                                     | Same behavior as Raycast                                                                      |
 
 ---
@@ -376,7 +401,9 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 ```
 პროფილი.swift
 ├── Paths / Zen / SystemPaths          — paths and identifiers
-├── Log / FileSystem                   — logging and filesystem helpers
+├── Log / Notification                 — logging and desktop notifications
+├── PowerManagement                    — IOKit sleep prevention assertions
+├── FileSystem                         — filesystem helpers
 ├── ProcessRunner                      — shell command execution
 ├── DiskImagePlist models              — hdiutil plist parsing
 ├── DiskImage                          — attach, detach, mount status
@@ -384,10 +411,10 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 ├── AppKitEventLoop                    — CLI notification bootstrap
 ├── VaultCredentialStore               — Touch ID Keychain store/retrieve
 ├── VaultCredentialSetup               — --store-vault-password CLI mode
-├── ZenApp                             — process lifecycle
-├── SecureZenSessionMonitor            — sleep / lock / quit monitoring
+├── ZenApp                             — process lifecycle and mount inspection
+├── SecureZenSessionMonitor            — sleep / wake / lock / quit monitoring
 ├── ZenBrowserLauncher                 — open Zen (monitored session)
-├── SecureVaultWorkflow                — secure profile + eject
+├── SecureVaultWorkflow                — secure profile + verified eject
 └── ProfileLauncher                    — entry orchestrator
 ```
 
