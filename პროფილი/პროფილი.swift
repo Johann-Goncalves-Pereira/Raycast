@@ -56,19 +56,31 @@ enum Log {
     static func success(_ message: String) { print("✅ \(message)") }
 }
 
-enum Notification {
+/// Desktop Notification Center alerts (avoids shadowing Foundation.Notification).
+enum DesktopNotification {
     static func display(title: String, message: String) {
-        let escapedTitle = title
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let escapedMessage = message
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+        let escapedTitle = escapeAppleScriptString(title)
+        let escapedMessage = escapeAppleScriptString(message)
         let script = "display notification \"\(escapedMessage)\" with title \"\(escapedTitle)\""
-        _ = try? ProcessRunner.capture(
-            executable: "/usr/bin/osascript",
-            arguments: ["-e", script]
-        )
+        do {
+            let (exitCode, output) = try ProcessRunner.capture(
+                executable: "/usr/bin/osascript",
+                arguments: ["-e", script]
+            )
+            if exitCode != 0 {
+                Log.error("Desktop notification failed (status \(exitCode)): \(output)")
+            }
+        } catch {
+            Log.error("Desktop notification failed: \(error)")
+        }
+    }
+
+    private static func escapeAppleScriptString(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
     }
 }
 
@@ -89,6 +101,8 @@ enum PowerManagement {
         if result == kIOReturnSuccess {
             hasAssertion = true
             Log.status("Power assertion acquired: preventing sleep until vault is secured")
+        } else {
+            Log.error("Failed to acquire sleep assertion (IOReturn \(result)); teardown may be interrupted by sleep")
         }
     }
 
@@ -96,6 +110,7 @@ enum PowerManagement {
         guard hasAssertion else { return }
         IOPMAssertionRelease(assertionID)
         hasAssertion = false
+        assertionID = 0
         Log.status("Power assertion released")
     }
 }
@@ -285,6 +300,12 @@ enum DiskImage {
     /// Detaches only after secure Zen (and other holders) have released the volume.
     /// In urgent mode (e.g. system sleep), termination is immediate and unmount is expedited.
     static func detach(at mountPoint: String, urgent: Bool = false) -> Bool {
+        // Idempotent: sleep fast-path may already have ejected before workflow cleanup runs.
+        if !FileSystem.exists(at: mountPoint) {
+            Log.success("Vault already unmounted at \(mountPoint)")
+            return true
+        }
+
         _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: urgent)
         let idleTimeout: TimeInterval = urgent ? 1.0 : 4.0
         _ = waitUntilMountIdle(mountPoint, timeout: idleTimeout)
@@ -382,11 +403,10 @@ enum DiskImage {
     private static func parseMountPointFromAttachOutput(_ output: String) -> String? {
         for line in output.components(separatedBy: .newlines) {
             let parts = line.split(separator: "\t")
-            guard parts.count >= 3,
-                  parts.last!.hasPrefix(SystemPaths.volumesRoot)
-            else { continue }
+            guard parts.count >= 3, let last = parts.last else { continue }
+            guard last.hasPrefix(SystemPaths.volumesRoot) else { continue }
 
-            let mountPoint = String(parts.last!)
+            let mountPoint = String(last)
             guard mountPoint == Paths.secureVolumeRoot else { continue }
 
             Log.success("DMG mounted successfully. Determined mount point: \(mountPoint)")
@@ -1051,15 +1071,19 @@ final class ActivityWatchEncryptedZenFilter {
 final class SecureZenSessionMonitor {
     /// Seed PID from launch; session liveness is profile-path based (main + helpers).
     private let securePid: pid_t
+    private let mountPoint: String
     private var workspaceObservers: [NSObjectProtocol] = []
     private var screenLockObserverToken: UnsafeMutableRawPointer?
     private var hasFinished = false
     private var endReason: SecureSessionEnd = .userQuitZen
     private let activityWatchFilter = ActivityWatchEncryptedZenFilter()
     private var mainPidExitedAt: Date?
+    /// True when sleep/lock already performed urgent detach under the power assertion.
+    private(set) var didUrgentEject = false
 
-    init(securePid: pid_t) {
+    init(securePid: pid_t, mountPoint: String) {
         self.securePid = securePid
+        self.mountPoint = mountPoint
     }
 
     func waitUntilSessionEnds() -> SecureSessionEnd {
@@ -1100,12 +1124,42 @@ final class SecureZenSessionMonitor {
         endReason = reason
     }
 
+    /// Sleep/lock fast-path: hold sleep, SIGKILL holders, and eject before macOS suspends.
     private func secureVaultOnSystemEvent() {
         guard !hasFinished else { return }
         PowerManagement.acquireSleepAssertion()
-        Log.status("System sleep/lock detected — securing vault...")
+        Log.status("System sleep/lock detected — securing vault under power assertion...")
         _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
+        if DiskImage.detach(at: mountPoint, urgent: true) {
+            didUrgentEject = true
+            Log.success("Urgent eject completed before sleep/lock proceeds")
+        } else {
+            Log.error("Urgent eject failed during sleep/lock — wake audit will retry")
+        }
         finish(with: .systemLockOrSleep)
+    }
+
+    /// Wake safety net: eject leftover mounts even if sleep teardown raced the kernel.
+    private func auditVaultAfterWake() {
+        Log.status("System wake detected — verifying vault state...")
+        guard FileSystem.exists(at: mountPoint) else {
+            Log.status("Wake audit: vault not mounted")
+            return
+        }
+
+        PowerManagement.acquireSleepAssertion()
+        Log.status("Wake audit: vault still mounted — forcing urgent eject")
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
+        if DiskImage.detach(at: mountPoint, urgent: true) {
+            didUrgentEject = true
+            Log.success("Wake audit ejected leftover vault")
+        } else {
+            Log.error("Wake audit could not eject leftover vault at \(mountPoint)")
+        }
+
+        if !hasFinished {
+            finish(with: .systemLockOrSleep)
+        }
     }
 
     private static let onScreenLocked: CFNotificationCallback = { _, observer, _, _, _ in
@@ -1133,8 +1187,7 @@ final class SecureZenSessionMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Log.status("System wake detected — verifying vault state...")
-                self?.secureVaultOnSystemEvent()
+                self?.auditVaultAfterWake()
             }
         )
 
@@ -1210,12 +1263,13 @@ enum ZenBrowserLauncher {
 
     static func launch(
         profilePath: String?,
-        session: Session
-    ) -> (launched: Bool, endReason: SecureSessionEnd?) {
+        session: Session,
+        mountPoint: String
+    ) -> (launched: Bool, endReason: SecureSessionEnd?, didUrgentEject: Bool) {
         guard FileSystem.exists(at: Paths.zenApp) else {
             Log.error("Zen Browser application not found at '\(Paths.zenApp)'.")
             Log.error("Please ensure Zen Browser is installed at the correct location.")
-            return (false, nil)
+            return (false, nil, false)
         }
 
         let resolvedProfile: String?
@@ -1236,14 +1290,15 @@ enum ZenBrowserLauncher {
 
         guard let securePid = ZenApp.openNewInstance(profilePath: resolvedProfile) else {
             Log.error("Zen Browser did not start within the expected time.")
-            return (false, nil)
+            return (false, nil, false)
         }
 
         Log.status("Secure Zen process PID: \(securePid)")
 
         switch session {
         case .monitoredSecureVault:
-            let endReason = SecureZenSessionMonitor(securePid: securePid).waitUntilSessionEnds()
+            let monitor = SecureZenSessionMonitor(securePid: securePid, mountPoint: mountPoint)
+            let endReason = monitor.waitUntilSessionEnds()
 
             switch endReason {
             case .userQuitZen:
@@ -1252,37 +1307,53 @@ enum ZenBrowserLauncher {
                 Log.success("Vault secured due to system sleep or lock.")
             }
 
-            return (true, endReason)
+            return (true, endReason, monitor.didUrgentEject)
 
         case .immediate:
             Log.success("Zen Browser operation completed successfully.")
-            return (true, nil)
+            return (true, nil, false)
         }
     }
 }
 
 enum SecureVaultWorkflow {
     static func run(at mountPoint: String) -> Bool {
+        // Cover the entire run (monitor + post-quit cleanup) so wake during eject still audits.
+        let wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            guard FileSystem.exists(at: mountPoint) else { return }
+            Log.status("Workflow wake audit: vault still mounted — forcing urgent eject")
+            PowerManagement.acquireSleepAssertion()
+            _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
+            _ = DiskImage.detach(at: mountPoint, urgent: true)
+        }
+
         defer {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             PowerManagement.releaseSleepAssertion()
         }
 
         Log.success("Profile successfully decrypted. Opening Zen Browser with secure profile...")
 
-        let launchResult: (launched: Bool, endReason: SecureSessionEnd?)
+        let launchResult: (launched: Bool, endReason: SecureSessionEnd?, didUrgentEject: Bool)
 
         if FileSystem.exists(at: Paths.secureProfile) {
             Log.status("Secure profile found at: \(Paths.secureProfile)")
             launchResult = ZenBrowserLauncher.launch(
                 profilePath: Paths.secureProfile,
-                session: .monitoredSecureVault
+                session: .monitoredSecureVault,
+                mountPoint: mountPoint
             )
         } else {
             Log.error("Secure profile not found at '\(Paths.secureProfile)'")
             Log.status("Opening Zen Browser without specific profile...")
             launchResult = ZenBrowserLauncher.launch(
                 profilePath: nil,
-                session: .monitoredSecureVault
+                session: .monitoredSecureVault,
+                mountPoint: mountPoint
             )
         }
 
@@ -1291,6 +1362,9 @@ enum SecureVaultWorkflow {
         }
 
         let isUrgent = launchResult.endReason == .systemLockOrSleep
+        if launchResult.didUrgentEject {
+            Log.status("Sleep/lock fast-path already ejected vault; verifying host state...")
+        }
 
         Log.status("Zen session ended. Ensuring vault is released before eject...")
         _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: isUrgent)
@@ -1305,14 +1379,15 @@ enum SecureVaultWorkflow {
 
         if !DiskImage.detach(at: mountPoint, urgent: isUrgent) {
             Log.error("Failed to eject DMG properly")
-            Notification.display(
+            DesktopNotification.display(
                 title: "Zen Browser",
                 message: "❌ Warning: Failed to eject encrypted profile. Vault is still mounted!"
             )
             return false
         }
 
-        Notification.display(
+        // Sleep fast-path may have already ejected; still confirm visibly on wake/quit paths.
+        DesktopNotification.display(
             title: "Zen Browser",
             message: "🔒 Encrypted profile secured and ejected."
         )
@@ -1327,7 +1402,7 @@ enum ProfileLauncher {
 
         guard FileSystem.exists(at: Paths.encryptedVault) else {
             Log.error("DMG file not found at \(Paths.encryptedVault)")
-            Notification.display(
+            DesktopNotification.display(
                 title: "Zen Browser",
                 message: "❌ Encrypted vault not found at \(Paths.encryptedVault)"
             )
@@ -1356,7 +1431,7 @@ enum ProfileLauncher {
             Log.status("Touch ID accepted — mounting vault...")
             guard let mountPoint = DiskImage.attach(Paths.encryptedVault, passphrase: passphrase) else {
                 Log.error("Failed to mount vault")
-                Notification.display(
+                DesktopNotification.display(
                     title: "Zen Browser",
                     message: "❌ Failed to mount encrypted vault."
                 )

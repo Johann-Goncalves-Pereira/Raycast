@@ -147,17 +147,19 @@ flowchart LR
 
     subgraph actions [Actions]
         NormalStop[Reap lingering helpers then finish userQuitZen]
-        SecurityStop[Acquire IOPMAssertion, urgent SIGKILL, finish systemLockOrSleep]
+        SecurityStop[Acquire IOPMAssertion, urgent SIGKILL + hdiutil detach, finish systemLockOrSleep]
+        WakeAudit[Wake audit: eject if vault still mounted]
     end
 
     Quit --> NormalStop
     Poll --> NormalStop
     Lock --> SecurityStop
     Sleep --> SecurityStop
-    Wake --> SecurityStop
+    Wake --> WakeAudit
 
     NormalStop --> Purge[HostFootprint purge in SecureVaultWorkflow]
     SecurityStop --> Purge
+    WakeAudit --> Purge
 
     Purge --> Eject[DiskImage.detach with verified eject and desktop notification]
 ```
@@ -166,9 +168,9 @@ flowchart LR
 | -------------------------- | ------------------------------------------------------- | --------------------------------------------------------------- |
 | Secure Zen quit            | `NSWorkspace.didTerminateApplicationNotification` matching `securePid` | Wait 1.0s grace period for helpers, reap, finish (`userQuitZen`) |
 | Secure Zen gone (fallback) | `ZenApp.isRunning(pid:)` poll every 0.25s               | Finish monitor (`userQuitZen`)                                  |
-| Screen lock                | `CFNotificationCenter` → `Zen.screenLockedNotification` | Force-terminate **secure PID only** → finish (`systemLockOrSleep`) |
-| System sleep               | `NSWorkspace.willSleepNotification`                     | Acquire `IOPMAssertion`, immediate `SIGKILL` → finish (`systemLockOrSleep`) |
-| System wake                | `NSWorkspace.didWakeNotification`                       | Safety audit: immediate teardown if vault remains mounted       |
+| Screen lock                | `CFNotificationCenter` → `Zen.screenLockedNotification` | Acquire assertion → urgent `SIGKILL` + `DiskImage.detach(urgent:)` → finish (`systemLockOrSleep`) |
+| System sleep               | `NSWorkspace.willSleepNotification`                     | Acquire `IOPMAssertion`, immediate `SIGKILL` + urgent eject under assertion → finish (`systemLockOrSleep`) |
+| System wake                | `NSWorkspace.didWakeNotification` (monitor + workflow)  | Safety audit: if vault still mounted, urgent terminate + eject (even after `hasFinished`) |
 
 > **Note:** Security monitoring applies for every Zen session this script launches (`ZenBrowserLauncher.Session.monitoredSecureVault`). Quit/kill of a daily Zen instance does **not** end the secure session.
 
@@ -382,8 +384,8 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 | Mount DMG → use Zen → Cmd+Q                                         | Lingering helpers reaped; DMG cleanly ejects; desktop notification displayed; exits 0         |
 | Already-mounted DMG path                                            | Skips Touch ID, monitors, purges footprint, ejects on quit                                    |
 | Lock screen (⌃⌘Q) during secure session                             | Secure PID killed only; daily Zen stays; footprint purged; DMG ejected; notification shown     |
-| Close lid / sleep during secure session                             | IOPMAssertion holds sleep; urgent SIGKILL; DMG ejected before sleep; no leftover mount        |
-| Wake machine after sleep                                            | didWakeNotification safety net verifies vault is detached; clean state confirmed             |
+| Close lid / sleep during secure session                             | IOPMAssertion holds sleep; urgent SIGKILL + detach under assertion before sleep; no leftover mount |
+| Wake machine after sleep                                            | didWake + workflow wake audit eject leftover mounts if sleep raced teardown                  |
 | Daily Zen already open → run პროფილი                                | Second Zen process with secure profile; daily Zen stays                                       |
 | Quit daily Zen during secure session                                | Secure session continues; monitor does not end early                                          |
 | Cmd+Q only the secure window                                        | Session ends, vault ejects; daily Zen stays; notification confirms ejection                   |
@@ -401,7 +403,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 ```
 პროფილი.swift
 ├── Paths / Zen / SystemPaths          — paths and identifiers
-├── Log / Notification                 — logging and desktop notifications
+├── Log / DesktopNotification          — logging and Notification Center alerts
 ├── PowerManagement                    — IOKit sleep prevention assertions
 ├── FileSystem                         — filesystem helpers
 ├── ProcessRunner                      — shell command execution
