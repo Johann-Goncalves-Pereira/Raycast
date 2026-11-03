@@ -3,16 +3,36 @@ set -euo pipefail
 
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+USING_CLT=0
+if [[ "$DEV_DIR" == *"/CommandLineTools" ]] \
+  || [[ ! -d "${DEV_DIR}/Toolchains/XcodeDefault.xctoolchain" ]]; then
+  USING_CLT=1
+fi
+
 echo "==> SwiftLint (humanized-type)"
-if command -v swiftlint >/dev/null 2>&1; then
-  (cd "$PKG" && swiftlint lint --strict --config .swiftlint.yml)
-else
-  echo "error: swiftlint not found. Install with: brew install swiftlint" >&2
+if ! command -v swiftlint >/dev/null 2>&1; then
+  echo "error: swiftlint not found. Install with: asdf plugin add swiftlint && asdf install swiftlint latest && asdf set -u swiftlint latest" >&2
   exit 1
 fi
 
+# SourceKitten looks under Toolchains/XcodeDefault…/sourcekitdInProc; bare
+# Command Line Tools only ship it at usr/lib, so disable SourceKit there.
+SWIFTLINT_ARGS=(lint --strict --config .swiftlint.yml)
+if [[ "$USING_CLT" -eq 1 ]]; then
+  echo "warning: no Xcode toolchain SourceKit; using --disable-sourcekit" >&2
+  SWIFTLINT_ARGS+=(--disable-sourcekit)
+fi
+(cd "$PKG" && swiftlint "${SWIFTLINT_ARGS[@]}")
+
 echo "==> swift test (humanized-type)"
-swift test --package-path "$PKG"
+SWIFT_TEST_ARGS=(test --package-path "$PKG")
+# CLT ships TestingMacros under plugins/testing but does not auto-load it.
+TESTING_MACROS_PLUGIN="${DEV_DIR}/usr/lib/swift/host/plugins/testing"
+if [[ "$USING_CLT" -eq 1 && -d "$TESTING_MACROS_PLUGIN" ]]; then
+  SWIFT_TEST_ARGS+=(-Xswiftc -plugin-path -Xswiftc "$TESTING_MACROS_PLUGIN")
+fi
+swift "${SWIFT_TEST_ARGS[@]}"
 
 echo "==> swift build -c release (humanized-type)"
 swift build -c release --package-path "$PKG"
