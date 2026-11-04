@@ -183,9 +183,7 @@ export default function Command() {
       },
       [bundleId],
       {
-        execute: Boolean(
-          context?.allowed && context.browser?.engine !== "webkit" && bundleId,
-        ),
+        execute: Boolean(context?.allowed && bundleId),
         initialData: cachedHistory,
       },
     );

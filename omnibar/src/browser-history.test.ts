@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { BrowserDefinition } from "./browser-catalog";
 import {
+  COCOA_EPOCH_OFFSET_SECONDS,
   filterHistory,
   getBrowserHistory,
   mapHistoryRows,
+  readGeckoHistoryRows,
+  readSafariHistoryRows,
   type HistoryItem,
   type HistoryRow,
 } from "./browser-history";
@@ -105,8 +108,9 @@ describe("filterHistory", () => {
 });
 
 describe("getBrowserHistory", () => {
-  it("returns no history for WebKit browsers", () => {
-    assert.deepEqual(getBrowserHistory(safariBrowser), []);
+  it("returns an array for Safari (empty when History.db missing)", () => {
+    const items = getBrowserHistory(safariBrowser);
+    assert.ok(Array.isArray(items));
   });
 });
 
@@ -161,5 +165,83 @@ describe("sqlite3 History fixture round-trip", () => {
     assert.equal(items[0]?.domain, "youtube.com");
     assert.equal(items[1]?.domain, "github.com");
     assert.ok(existsSync(historyDb));
+  });
+});
+
+describe("readGeckoHistoryRows", () => {
+  let fixtureRoot: string | undefined;
+
+  after(() => {
+    if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  it("reads moz_places from a places.sqlite fixture", () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), "omnibar-gecko-"));
+    const places = join(fixtureRoot, "places.sqlite");
+    execFileSync("sqlite3", [
+      places,
+      `CREATE TABLE moz_places (
+        id INTEGER PRIMARY KEY,
+        url LONGVARCHAR,
+        title LONGVARCHAR,
+        visit_count INTEGER DEFAULT 0,
+        hidden INTEGER DEFAULT 0,
+        last_visit_date INTEGER
+      );
+      INSERT INTO moz_places (id, url, title, visit_count, hidden, last_visit_date) VALUES
+        (1, 'https://zen.browser/docs', 'Zen Docs', 2, 0, 1700000000000000),
+        (2, 'about:config', 'Config', 1, 0, 1800000000000000),
+        (3, 'https://github.com/zen', 'Zen GH', 1, 0, 1600000000000000);`,
+    ]);
+
+    const rows = readGeckoHistoryRows(places);
+    const items = mapHistoryRows(rows);
+    assert.equal(items.length, 2);
+    assert.equal(items[0]?.domain, "zen.browser");
+    assert.equal(items[1]?.domain, "github.com");
+  });
+});
+
+describe("readSafariHistoryRows", () => {
+  let fixtureRoot: string | undefined;
+
+  after(() => {
+    if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  it("reads history_items joined with history_visits", () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), "omnibar-safari-"));
+    const historyDb = join(fixtureRoot, "History.db");
+    const cocoaNow = 700_000_000; // ~2023 in Cocoa time
+    execFileSync("sqlite3", [
+      historyDb,
+      `CREATE TABLE history_items (
+        id INTEGER PRIMARY KEY,
+        url TEXT,
+        title TEXT
+      );
+      CREATE TABLE history_visits (
+        id INTEGER PRIMARY KEY,
+        history_item INTEGER,
+        visit_time REAL
+      );
+      INSERT INTO history_items (id, url, title) VALUES
+        (1, 'https://apple.com/safari', 'Safari'),
+        (2, 'about:blank', 'Blank');
+      INSERT INTO history_visits (id, history_item, visit_time) VALUES
+        (1, 1, ${cocoaNow}),
+        (2, 1, ${cocoaNow + 10}),
+        (3, 2, ${cocoaNow + 20});`,
+    ]);
+
+    const rows = readSafariHistoryRows(historyDb);
+    const items = mapHistoryRows(rows);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.domain, "apple.com");
+    assert.equal(items[0]?.visitCount, 2);
+    assert.equal(
+      items[0]?.lastVisitTime,
+      Math.round((cocoaNow + 10 + COCOA_EPOCH_OFFSET_SECONDS) * 1000),
+    );
   });
 });
