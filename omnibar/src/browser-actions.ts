@@ -2,7 +2,7 @@ import { findCommand } from "./commands";
 import type { Tab } from "./classify";
 import { formatMarkdownLink, sanitizeUrl, sanitizeUrls } from "./supercopy";
 
-export type ActionEngine = "chromium" | "webkit" | "arc";
+export type ActionEngine = "chromium" | "webkit" | "arc" | "gecko";
 
 export type ActionContext = {
   browserName: string;

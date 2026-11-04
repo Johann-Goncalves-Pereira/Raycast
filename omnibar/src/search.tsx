@@ -8,7 +8,6 @@ import {
   List,
   Toast,
   closeMainWindow,
-  getFrontmostApplication,
   getPreferenceValues,
   popToRoot,
   showToast,
@@ -32,9 +31,9 @@ import {
 import {
   ExtensionPreferences,
   findBrowserByBundleId,
-  isBrowserExcluded,
   type BrowserDefinition,
 } from "./browsers";
+import { resolveOmnibarContext } from "./resolve-frontmost-browser";
 import { Tab, classifyInput } from "./classify";
 import { BrowserCommand, filterCommands } from "./commands";
 import {
@@ -107,18 +106,7 @@ export default function Command() {
     data: context,
     isLoading: isLoadingContext,
     error: contextError,
-  } = usePromise(async () => {
-    const frontmost = await getFrontmostApplication();
-    const browser = findBrowserByBundleId(frontmost.bundleId);
-    if (!browser || isBrowserExcluded(frontmost.bundleId, prefs)) {
-      return {
-        frontmost,
-        browser: null as BrowserDefinition | null,
-        allowed: false,
-      };
-    }
-    return { frontmost, browser, allowed: true };
-  });
+  } = usePromise(async () => resolveOmnibarContext(prefs));
 
   useEffect(() => {
     if (!context) return;
@@ -881,9 +869,12 @@ export default function Command() {
     );
   }
 
+  const navigationTitle = browser?.name ?? "Omnibar";
+
   return (
     <List
       isLoading={isLoading}
+      navigationTitle={navigationTitle}
       searchBarPlaceholder={placeholder}
       searchText={searchText}
       onSearchTextChange={handleSearchTextChange}

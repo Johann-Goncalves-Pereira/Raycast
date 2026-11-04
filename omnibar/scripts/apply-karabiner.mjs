@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Applies the Cmd+P → Browser Spotlight Karabiner rule via code
+ * Applies the Cmd+P → Omnibar Karabiner rule via code
  * (same intent as the Raycast "Apply Browser Exclusions" command).
  *
  * Usage: npm run apply-karabiner
@@ -13,11 +13,11 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const KARABINER_RULE_DESCRIPTION = "Cmd+P → Browser Spotlight when browser frontmost";
-const DEEPLINK = "raycast://extensions/johann_goncalves_pereira/browser-spotlight/search";
+const KARABINER_RULE_DESCRIPTION = "Cmd+P → Omnibar when browser frontmost";
+const DEEPLINK = "raycast://extensions/johann_goncalves_pereira/omnibar/search";
 const SHELL_COMMAND = `open '${DEEPLINK}'`;
 const CONFIG_PATH = path.join(os.homedir(), ".config", "karabiner", "karabiner.json");
-const TEMPLATE_PATH = path.join(__dirname, "..", "karabiner", "cmd-p-browser-spotlight.json");
+const TEMPLATE_PATH = path.join(__dirname, "..", "karabiner", "cmd-p-omnibar.json");
 
 const BUNDLE_IDS = [
   "com.google.Chrome",
@@ -27,6 +27,7 @@ const BUNDLE_IDS = [
   "com.apple.SafariTechnologyPreview",
   "company.thebrowser.dia",
   "net.imput.helium",
+  "app.zen-browser.zen",
   "com.brave.Browser",
   "com.microsoft.edgemac",
   "com.vivaldi.Vivaldi",
@@ -93,7 +94,7 @@ function apply() {
   fs.mkdirSync(path.dirname(TEMPLATE_PATH), { recursive: true });
   fs.writeFileSync(
     TEMPLATE_PATH,
-    JSON.stringify({ title: "Browser Spotlight — Cmd+P in browsers", rules: [rule] }, null, 2) + "\n",
+    JSON.stringify({ title: "Omnibar — Cmd+P in browsers", rules: [rule] }, null, 2) + "\n",
   );
 
   return { configPath: CONFIG_PATH, ruleCount: rules.length, deeplink: DEEPLINK };

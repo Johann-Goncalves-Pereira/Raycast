@@ -1,10 +1,10 @@
-# Browser Spotlight — Arc-style Cmd+P for browsers
+# Omnibar — Omnibar Cmd+P for browsers
 
 Local Raycast extension. When a Chromium/WebKit browser is frontmost, **⌘P** opens an Arc-like command bar: **Switch to Tab** first, MRU zero-state, history, bookmarks, web/site search, portable browser commands, Supercopy, and inline math — without Arc-only shell features (Spaces, Little Arc, Split, Easels).
 
 ## Setup
 
-1. In Raycast: **Import Extension** → choose `browser-spotlight/`
+1. In Raycast: **Import Extension** → choose `omnibar/`
 2. Or from this folder: `npm install && npm run dev`
 3. Apply / repair the Karabiner Cmd+P binding:
 
@@ -21,12 +21,12 @@ npm run fix-karabiner     # diagnose daemons, open permission panes, re-apply ru
 npm run refresh-icon
 ```
 
-Then in Raycast: **Browser Spotlight → Actions (⌘K) → Development → Clear Local Assets Cache**
+Then in Raycast: **Omnibar → Actions (⌘K) → Development → Clear Local Assets Cache**
 
 5. Grant **Automation** access for Raycast → each browser (System Settings → Privacy & Security → Automation)
 
-Karabiner rule description: `Cmd+P → Browser Spotlight when browser frontmost`  
-Deeplink: `raycast://extensions/johann_goncalves_pereira/browser-spotlight/search`
+Karabiner rule description: `Cmd+P → Omnibar when browser frontmost`  
+Deeplink: `raycast://extensions/johann_goncalves_pereira/omnibar/search`
 
 ## If ⌘P still opens a new tab (Karabiner not running)
 
@@ -66,7 +66,7 @@ npm run install-cmd-p-hotkey
 Then authorize the **.app** (not the old bare binary):
 
 1. **Privacy & Security → Accessibility** → remove old `browser-cmd-p-hotkey` if listed → add  
-   `~/Library/Application Support/browser-spotlight/Browser Spotlight Cmd+P.app` → ON
+   `~/Library/Application Support/omnibar/Omnibar Cmd+P.app` → ON
 2. **Privacy & Security → Input Monitoring** → add the same app → ON  
    (often required on macOS 26 even when Accessibility is already on)
 3. Focus Helium → ⌘P
@@ -74,14 +74,14 @@ Then authorize the **.app** (not the old bare binary):
 Check logs if it still fails:
 
 ```bash
-tail -f ~/Library/Application\ Support/browser-spotlight/cmd-p-hotkey.err.log
+tail -f ~/Library/Application\ Support/omnibar/cmd-p-hotkey.err.log
 ```
 
-You want a line: `Browser Spotlight Cmd+P hotkey running`
+You want a line: `Omnibar Cmd+P hotkey running`
 
 ### Interim Raycast global hotkey
 
-While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **Browser Spotlight** via Configure Command. That is global (not browser-only).
+While fixing permissions, you can also bind a Raycast hotkey (**⌘⇧P**) on **Omnibar** via Configure Command. That is global (not browser-only).
 
 ## Preferences
 
@@ -112,7 +112,7 @@ Settings: Preferences, Manage Extensions, Add Extension
 
 ## Site search (Chrome / Arc style)
 
-When a Chromium-based browser is frontmost, Browser Spotlight reads your **active site-search shortcuts** and built-in search engines from that browser’s profile (`Web Data` → `keywords` table). This is the same list you manage in the browser under **Settings → Search engines and site search**.
+When a Chromium-based browser is frontmost, Omnibar reads your **active site-search shortcuts** and built-in search engines from that browser’s profile (`Web Data` → `keywords` table). This is the same list you manage in the browser under **Settings → Search engines and site search**.
 
 ### History & bookmarks
 
@@ -120,7 +120,7 @@ Chromium profiles also expose **history** (`History` → `urls`) and **bookmarks
 
 ### How to use
 
-1. Open Browser Spotlight (**⌘P** when a supported browser is focused).
+1. Open Omnibar (**⌘P** when a supported browser is focused).
 2. Empty bar → pick an MRU tab or a suggested command.
 3. Type a query → Switch to Tab if open; otherwise search / history / bookmarks / commands.
 4. Type `/ ` then a command name (e.g. `/ reload`) for the action filter.

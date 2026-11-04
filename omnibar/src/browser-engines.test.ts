@@ -133,7 +133,7 @@ describe("sqlite3 fixture round-trip", () => {
   });
 
   it("reads keywords JSON from a Web Data database copy", () => {
-    fixtureRoot = mkdtempSync(join(tmpdir(), "browser-spotlight-fixture-"));
+    fixtureRoot = mkdtempSync(join(tmpdir(), "omnibar-fixture-"));
     const webData = join(fixtureRoot, "Web Data");
     execFileSync("sqlite3", [
       webData,

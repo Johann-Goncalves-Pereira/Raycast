@@ -12,33 +12,35 @@ type ExtensionPreferences = {
   "searchEngine": "google" | "duckduckgo" | "bing",
   /** Suggestions - When enabled, show DuckDuckGo / YouTube autocomplete suggestions. */
   "enableSuggestions": boolean,
-  /** Excluded Browsers - Exclude Google Chrome from Cmd+P Browser Spotlight (keeps native Print). */
+  /** Excluded Browsers - Exclude Google Chrome from Cmd+P Omnibar (keeps native Print). */
   "exclude_com.google.Chrome": boolean,
-  /** undefined - Exclude Chrome Canary from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Chrome Canary from Cmd+P Omnibar. */
   "exclude_com.google.Chrome.canary": boolean,
-  /** undefined - Exclude Chrome Dev from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Chrome Dev from Cmd+P Omnibar. */
   "exclude_com.google.Chrome.dev": boolean,
-  /** undefined - Exclude Safari from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Safari from Cmd+P Omnibar. */
   "exclude_com.apple.Safari": boolean,
-  /** undefined - Exclude Safari Technology Preview from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Safari Technology Preview from Cmd+P Omnibar. */
   "exclude_com.apple.SafariTechnologyPreview": boolean,
-  /** undefined - Exclude Arc from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Arc from Cmd+P Omnibar. */
   "exclude_company.thebrowser.Browser": boolean,
-  /** undefined - Exclude Dia from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Dia from Cmd+P Omnibar. */
   "exclude_company.thebrowser.dia": boolean,
-  /** undefined - Exclude Helium from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Helium from Cmd+P Omnibar. */
   "exclude_net.imput.helium": boolean,
-  /** undefined - Exclude Brave from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Zen Browser from Cmd+P Omnibar. */
+  "exclude_app.zen-browser.zen": boolean,
+  /** undefined - Exclude Brave from Cmd+P Omnibar. */
   "exclude_com.brave.Browser": boolean,
-  /** undefined - Exclude Microsoft Edge from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Microsoft Edge from Cmd+P Omnibar. */
   "exclude_com.microsoft.edgemac": boolean,
-  /** undefined - Exclude Vivaldi from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Vivaldi from Cmd+P Omnibar. */
   "exclude_com.vivaldi.Vivaldi": boolean,
-  /** undefined - Exclude Opera from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Opera from Cmd+P Omnibar. */
   "exclude_com.operasoftware.Opera": boolean,
-  /** undefined - Exclude Orion from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Orion from Cmd+P Omnibar. */
   "exclude_com.kagi.kagimacOS": boolean,
-  /** undefined - Exclude Chromium from Cmd+P Browser Spotlight. */
+  /** undefined - Exclude Chromium from Cmd+P Omnibar. */
   "exclude_org.chromium.Chromium": boolean
 }
 

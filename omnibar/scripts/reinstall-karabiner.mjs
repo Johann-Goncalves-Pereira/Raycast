@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Download the latest Karabiner-Elements DMG and open it for install.
- * Does NOT delete ~/.config/karabiner (your Browser Spotlight + Cmd+Tab rules stay).
+ * Does NOT delete ~/.config/karabiner (your Omnibar + Cmd+Tab rules stay).
  *
  * Usage: npm run reinstall-karabiner
  */

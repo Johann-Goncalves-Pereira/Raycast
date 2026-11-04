@@ -1,8 +1,8 @@
 {
-  "title": "Browser Spotlight — Cmd+P in browsers",
+  "title": "Omnibar — Cmd+P in browsers",
   "rules": [
     {
-      "description": "Cmd+P → Browser Spotlight when browser frontmost",
+      "description": "Cmd+P → Omnibar when browser frontmost",
       "manipulators": [
         {
           "type": "basic",
@@ -19,7 +19,7 @@
           },
           "to": [
             {
-              "shell_command": "open 'raycast://extensions/johann_goncalves_pereira/browser-spotlight/search'"
+              "shell_command": "open 'raycast://extensions/johann_goncalves_pereira/omnibar/search'"
             }
           ],
           "conditions": [
@@ -33,6 +33,7 @@
                 "^com\\.apple\\.SafariTechnologyPreview$",
                 "^company\\.thebrowser\\.dia$",
                 "^net\\.imput\\.helium$",
+                "^app\\.zen-browser\\.zen$",
                 "^com\\.brave\\.Browser$",
                 "^com\\.microsoft\\.edgemac$",
                 "^com\\.vivaldi\\.Vivaldi$",

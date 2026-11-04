@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const sourceIcon = path.join(root, "assets", "icon.png");
 const manifestIcon = path.join(root, "assets", "spotlight-icon.png");
-const raycastAssets = path.join(os.homedir(), ".config", "raycast", "extensions", "browser-spotlight", "assets");
+const raycastAssets = path.join(os.homedir(), ".config", "raycast", "extensions", "omnibar", "assets");
 
 function ensure512(iconPath) {
   const out = execSync(`sips -g pixelWidth -g pixelHeight "${iconPath}"`, { encoding: "utf8" });
@@ -40,4 +40,4 @@ if (fs.existsSync(raycastAssets)) {
 
 execSync("npx ray build -e dist", { cwd: root, stdio: "inherit" });
 console.log("Icon synced. If Raycast still shows the old purple icon, run:");
-console.log("Raycast → Browser Spotlight → Actions (⌘K) → Development → Clear Local Assets Cache");
+console.log("Raycast → Omnibar → Actions (⌘K) → Development → Clear Local Assets Cache");

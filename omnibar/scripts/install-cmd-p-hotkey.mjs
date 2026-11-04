@@ -13,16 +13,16 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = os.homedir();
-const SUPPORT = path.join(HOME, "Library", "Application Support", "browser-spotlight");
-const APP_NAME = "Browser Spotlight Cmd+P.app";
+const SUPPORT = path.join(HOME, "Library", "Application Support", "omnibar");
+const APP_NAME = "Omnibar Cmd+P.app";
 const APP = path.join(SUPPORT, APP_NAME);
 const MACOS_DIR = path.join(APP, "Contents", "MacOS");
-const BIN = path.join(MACOS_DIR, "Browser Spotlight Cmd+P");
+const BIN = path.join(MACOS_DIR, "Omnibar Cmd+P");
 const SOURCE = path.join(__dirname, "browser-cmd-p-hotkey.swift");
 const LAUNCH_AGENTS = path.join(HOME, "Library", "LaunchAgents");
-const PLIST = path.join(LAUNCH_AGENTS, "com.johann.browser-spotlight.cmd-p.plist");
-const LABEL = "com.johann.browser-spotlight.cmd-p";
-const BUNDLE_ID = "com.johann.browser-spotlight.cmd-p";
+const PLIST = path.join(LAUNCH_AGENTS, "com.johann.omnibar.cmd-p.plist");
+const LABEL = "com.johann.omnibar.cmd-p";
+const BUNDLE_ID = "com.johann.omnibar.cmd-p";
 
 function run(cmd, opts = {}) {
   return execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts }).trim();
@@ -36,11 +36,11 @@ const infoPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>Browser Spotlight Cmd+P</string>
+  <string>Omnibar Cmd+P</string>
   <key>CFBundleIdentifier</key>
   <string>${BUNDLE_ID}</string>
   <key>CFBundleName</key>
-  <string>Browser Spotlight Cmd+P</string>
+  <string>Omnibar Cmd+P</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -115,16 +115,16 @@ Installed as: ${APP}
 
 IMPORTANT — re-authorize after packaging as .app:
 1. System Settings → Privacy & Security → Accessibility
-   - Find "Browser Spotlight Cmd+P"
+   - Find "Omnibar Cmd+P"
    - Toggle it OFF, then ON again (required after every rebuild)
    - If missing: Click + and add: ${APP}
 2. System Settings → Privacy & Security → Input Monitoring
    - Same app → OFF then ON (or add it)
 3. Then run:
-   launchctl kickstart -k gui/$(id -u)/com.johann.browser-spotlight.cmd-p
+   launchctl kickstart -k gui/$(id -u)/com.johann.omnibar.cmd-p
 4. Confirm log shows "hotkey running (Carbon)":
    tail -f ${path.join(SUPPORT, "cmd-p-hotkey.err.log")}
-5. Focus Helium → ⌘P → Browser Spotlight
+5. Focus Helium → ⌘P → Omnibar
 `);
 
 try {

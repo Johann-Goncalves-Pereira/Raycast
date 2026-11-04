@@ -106,7 +106,7 @@ function rowToEngine(row: KeywordRow): BrowserKeywordEngine | null {
 }
 
 function copyDbForRead(webDataPath: string): { dir: string; dbPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), "browser-spotlight-webdata-"));
+  const dir = mkdtempSync(join(tmpdir(), "omnibar-webdata-"));
   const dbPath = join(dir, "Web Data");
   copyFileSync(webDataPath, dbPath);
   for (const suffix of ["-wal", "-shm", "-journal"] as const) {

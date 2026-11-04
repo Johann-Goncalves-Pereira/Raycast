@@ -22,7 +22,7 @@ export const KARABINER_CONFIG_PATH = join(
 );
 
 const EXTENSION_DEEPLINK =
-  "open 'raycast://extensions/johann_goncalves_pereira/browser-spotlight/search'";
+  "open 'raycast://extensions/johann_goncalves_pereira/omnibar/search'";
 
 type KarabinerManipulator = {
   type: string;
@@ -155,7 +155,7 @@ export function writeKarabinerTemplate(
 ): void {
   const rule = buildSpotlightRule(prefs);
   const template = {
-    title: "Browser Spotlight — Cmd+P in browsers",
+    title: "Omnibar — Cmd+P in browsers",
     rules: [rule],
   };
   mkdirSync(dirname(targetPath), { recursive: true });

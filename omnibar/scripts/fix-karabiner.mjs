@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Diagnose and repair Karabiner so Cmd+P → Browser Spotlight can fire.
+ * Diagnose and repair Karabiner so Cmd+P → Omnibar can fire.
  *
  * Usage: npm run fix-karabiner
  *
@@ -15,8 +15,8 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const KARABINER_RULE_DESCRIPTION = "Cmd+P → Browser Spotlight when browser frontmost";
-const DEEPLINK = "raycast://extensions/johann_goncalves_pereira/browser-spotlight/search";
+const KARABINER_RULE_DESCRIPTION = "Cmd+P → Omnibar when browser frontmost";
+const DEEPLINK = "raycast://extensions/johann_goncalves_pereira/omnibar/search";
 const CONFIG_PATH = path.join(os.homedir(), ".config", "karabiner", "karabiner.json");
 const ORG_PQRS = "/Library/Application Support/org.pqrs";
 const KARABINER_APP = "/Applications/Karabiner-Elements.app";
@@ -115,7 +115,7 @@ function openPermissionPanes() {
 
 function reapplyRule() {
   const script = path.join(__dirname, "apply-karabiner.mjs");
-  console.log("Re-applying Browser Spotlight Cmd+P rule…");
+  console.log("Re-applying Omnibar Cmd+P rule…");
   const result = spawnSync(process.execPath, [script], {
     cwd: path.join(__dirname, ".."),
     encoding: "utf8",
@@ -160,7 +160,7 @@ function printNextSteps(d) {
 
   if (healthy) {
     console.log("Karabiner looks healthy.");
-    console.log("Test: focus Helium → press ⌘P → Browser Spotlight should open (not a new tab).");
+    console.log("Test: focus Helium → press ⌘P → Omnibar should open (not a new tab).");
     console.log("If Raycast opens but tabs are empty: System Settings → Privacy & Security →");
     console.log("  Automation → allow Raycast to control Helium.");
     return 0;

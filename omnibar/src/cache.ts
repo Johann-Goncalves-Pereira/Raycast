@@ -42,7 +42,7 @@ function getDefaultStore(): CacheStore {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { Cache } =
         require("@raycast/api") as typeof import("@raycast/api");
-      defaultStore = new Cache({ namespace: "browser-spotlight" });
+      defaultStore = new Cache({ namespace: "omnibar" });
     } catch {
       defaultStore = memoryStore();
     }

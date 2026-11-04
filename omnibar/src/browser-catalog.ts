@@ -1,7 +1,7 @@
 import { homedir } from "os";
 import { join } from "path";
 
-export type BrowserEngine = "chromium" | "webkit" | "arc";
+export type BrowserEngine = "chromium" | "webkit" | "arc" | "gecko";
 
 export type BrowserDefinition = {
   id: string;
@@ -76,6 +76,13 @@ export const BROWSER_CATALOG: BrowserDefinition[] = [
     profileSupportPath: "net.imput.helium",
   },
   {
+    id: "zen",
+    name: "Zen",
+    bundleId: "app.zen-browser.zen",
+    engine: "gecko",
+    profileSupportPath: "zen",
+  },
+  {
     id: "brave",
     name: "Brave Browser",
     bundleId: "com.brave.Browser",
@@ -144,5 +151,8 @@ export function profileRootFor(browser: BrowserDefinition): string | undefined {
   );
 }
 
+export const EXTENSION_NAME = "omnibar";
+export const EXTENSION_DEEPLINK =
+  "raycast://extensions/johann_goncalves_pereira/omnibar/search";
 export const KARABINER_RULE_DESCRIPTION =
-  "Cmd+P → Browser Spotlight when browser frontmost";
+  "Cmd+P → Omnibar when browser frontmost";

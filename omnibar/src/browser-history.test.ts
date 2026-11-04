@@ -118,7 +118,7 @@ describe("sqlite3 History fixture round-trip", () => {
   });
 
   it("reads urls JSON from a History database copy", () => {
-    fixtureRoot = mkdtempSync(join(tmpdir(), "browser-spotlight-hist-"));
+    fixtureRoot = mkdtempSync(join(tmpdir(), "omnibar-hist-"));
     const historyDb = join(fixtureRoot, "History");
     execFileSync("sqlite3", [
       historyDb,

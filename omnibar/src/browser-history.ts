@@ -30,7 +30,7 @@ function isInternalUrl(url: string): boolean {
 }
 
 function copyDbForRead(historyPath: string): { dir: string; dbPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), "browser-spotlight-history-"));
+  const dir = mkdtempSync(join(tmpdir(), "omnibar-history-"));
   const dbPath = join(dir, "History");
   copyFileSync(historyPath, dbPath);
   for (const suffix of ["-wal", "-shm", "-journal"] as const) {

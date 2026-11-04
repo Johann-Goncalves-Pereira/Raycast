@@ -19,13 +19,13 @@ export default async function Command() {
     const result = applyExclusionsToKarabiner(prefs);
 
     const templateCandidates = [
-      join(__dirname, "..", "karabiner", "cmd-p-browser-spotlight.json"),
-      join(process.cwd(), "karabiner", "cmd-p-browser-spotlight.json"),
+      join(__dirname, "..", "karabiner", "cmd-p-omnibar.json"),
+      join(process.cwd(), "karabiner", "cmd-p-omnibar.json"),
     ];
     for (const candidate of templateCandidates) {
       if (
         existsSync(join(candidate, "..")) ||
-        candidate.includes("browser-spotlight")
+        candidate.includes("omnibar")
       ) {
         try {
           writeKarabinerTemplate(candidate, prefs);
@@ -38,7 +38,7 @@ export default async function Command() {
 
     await closeMainWindow();
     await showHUD(
-      `Browser Spotlight: ${result.allowedCount} allowed, ${result.excludedCount} excluded`,
+      `Omnibar: ${result.allowedCount} allowed, ${result.excludedCount} excluded`,
     );
   } catch (error) {
     await showToast({
