@@ -206,6 +206,7 @@
     "fix-karabiner": "node scripts/fix-karabiner.mjs",
     "reinstall-karabiner": "node scripts/reinstall-karabiner.mjs",
     "install-cmd-p-hotkey": "node scripts/install-cmd-p-hotkey.mjs",
+    "install-ask-bridge": "node scripts/install-ask-bridge.mjs",
     "refresh-icon": "node scripts/refresh-icon.mjs"
   },
   "allowScripts": {

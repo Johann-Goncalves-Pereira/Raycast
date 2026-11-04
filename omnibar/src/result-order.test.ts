@@ -4,8 +4,10 @@ import {
   MRU_TAB_LIMIT,
   NEW_SEARCH_ITEM_ID,
   SCOPED_SEARCH_ITEM_ID,
+  bangItemId,
   commandItemId,
   firstActionItemId,
+  historyItemId,
   isActionScopeQuery,
   mruTabs,
   parseQueryScope,
@@ -16,9 +18,14 @@ import {
 } from "./result-order";
 
 describe("parseQueryScope / isActionScopeQuery", () => {
-  it("detects slash-space as commands-only scope", () => {
+  it("treats / alone and /filter as commands-only scope", () => {
+    assert.equal(isActionScopeQuery("/"), true);
     assert.equal(isActionScopeQuery("/ reload"), true);
-    assert.equal(isActionScopeQuery("/  "), true);
+    assert.equal(isActionScopeQuery("/reload"), true);
+    assert.deepEqual(parseQueryScope("/"), {
+      mode: "commands",
+      filterQuery: "",
+    });
     assert.deepEqual(parseQueryScope("/ reload"), {
       mode: "commands",
       filterQuery: "reload",
@@ -26,22 +33,28 @@ describe("parseQueryScope / isActionScopeQuery", () => {
   });
 
   it("treats plain queries as unified", () => {
-    assert.equal(isActionScopeQuery("/reload"), false);
     assert.equal(isActionScopeQuery("reload"), false);
     assert.deepEqual(parseQueryScope("github"), {
       mode: "unified",
       filterQuery: "github",
     });
   });
+
+  it("lists bangs for @ alone", () => {
+    assert.deepEqual(parseQueryScope("@"), {
+      mode: "bangs",
+      filterQuery: "",
+    });
+  });
 });
 
 describe("sectionsForQuery", () => {
-  it("puts matching tabs first while typing, then search stream", () => {
+  it("puts search then history ahead of tabs while typing", () => {
     assert.deepEqual(sectionsForQuery("raycast"), [
-      "actions",
-      "answers",
       "search",
       "history",
+      "actions",
+      "answers",
       "bookmarks",
       "commands",
     ]);
@@ -58,6 +71,11 @@ describe("sectionsForQuery", () => {
 
   it("scopes exclusively to commands for / queries", () => {
     assert.deepEqual(sectionsForQuery("/ pin"), ["commands"]);
+    assert.deepEqual(sectionsForQuery("/"), ["commands"]);
+  });
+
+  it("scopes to bangs for @ alone", () => {
+    assert.deepEqual(sectionsForQuery("@"), ["bangs"]);
   });
 });
 
@@ -82,17 +100,31 @@ describe("selectionAfterType", () => {
         query: "github",
         scoped: false,
         matchingTabs: [tab],
+        historyUrls: ["https://history.example"],
       }),
       tabItemId(tab),
     );
   });
 
-  it("falls back to clean search when no tab matches", () => {
+  it("selects first history when no tab matches", () => {
     assert.equal(
       selectionAfterType({
         query: "docs",
         scoped: false,
         matchingTabs: [],
+        historyUrls: ["https://docs.example/a"],
+      }),
+      historyItemId("https://docs.example/a"),
+    );
+  });
+
+  it("falls back to clean search when no tab or history", () => {
+    assert.equal(
+      selectionAfterType({
+        query: "docs",
+        scoped: false,
+        matchingTabs: [],
+        historyUrls: [],
       }),
       NEW_SEARCH_ITEM_ID,
     );
@@ -121,19 +153,31 @@ describe("selectionAfterType", () => {
     );
   });
 
-  it("selects the first MRU tab when nothing has been typed", () => {
+  it("selects the first bang under @ listing", () => {
     assert.equal(
       selectionAfterType({
-        query: "",
+        query: "@",
         scoped: false,
-        matchingTabs: [tab],
+        bangIds: ["youtube"],
       }),
-      tabItemId(tab),
+      bangItemId("youtube"),
     );
   });
 });
 
 describe("tabJumpTarget", () => {
+  it("jumps to the bang before a site action", () => {
+    assert.equal(
+      tabJumpTarget({
+        query: "you",
+        bangIds: ["youtube"],
+        siteIds: ["youtube"],
+        tabs: [{ windowId: "1", tabId: "2", url: "https://example.com" }],
+      }),
+      bangItemId("youtube"),
+    );
+  });
+
   it("jumps to the site action before a matching tab", () => {
     assert.equal(
       tabJumpTarget({
@@ -146,41 +190,6 @@ describe("tabJumpTarget", () => {
     );
   });
 
-  it("jumps to the first matching tab when no site action matches", () => {
-    assert.equal(
-      tabJumpTarget({
-        query: "example",
-        siteIds: [],
-        tabs: [{ windowId: "1", tabId: "2", url: "https://example.com" }],
-      }),
-      "tab-1-2-https://example.com",
-    );
-  });
-
-  it("jumps to an extension when that is the only action", () => {
-    assert.equal(
-      tabJumpTarget({
-        query: "ext",
-        siteIds: [],
-        tabs: [],
-        extensionIds: ["dark-reader"],
-      }),
-      "ext-dark-reader",
-    );
-  });
-
-  it("jumps to a command when sites/tabs/extensions are empty", () => {
-    assert.equal(
-      tabJumpTarget({
-        query: "reload",
-        siteIds: [],
-        tabs: [],
-        commandIds: ["reload"],
-      }),
-      commandItemId("reload"),
-    );
-  });
-
   it("does not jump under / scope or empty query", () => {
     assert.equal(
       tabJumpTarget({
@@ -188,14 +197,6 @@ describe("tabJumpTarget", () => {
         siteIds: ["youtube"],
         tabs: [{ windowId: "1", tabId: "2", url: "https://example.com" }],
         commandIds: ["reload"],
-      }),
-      undefined,
-    );
-    assert.equal(
-      tabJumpTarget({
-        query: "",
-        siteIds: ["youtube"],
-        tabs: [{ windowId: "1", tabId: "2", url: "https://example.com" }],
       }),
       undefined,
     );

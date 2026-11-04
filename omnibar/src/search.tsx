@@ -14,7 +14,13 @@ import {
 } from "@raycast/api";
 import { runAppleScript, useCachedPromise, usePromise } from "@raycast/utils";
 import Fuse from "fuse.js";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createBrowserActions, type ActionEngine } from "./browser-actions";
 import {
   BookmarkItem,
@@ -41,6 +47,20 @@ import {
   getInstalledExtensions,
   peekCachedExtensions,
 } from "./extensions";
+import { askBridge } from "./ask-bridge";
+import {
+  FALLBACK_BANGS,
+  bangItemId,
+  buildBangSearchUrl,
+  bumpBangUsage,
+  historyItemId,
+  mergeBangCatalog,
+  parseBangQuery,
+  rankBangs,
+  readBangUsage,
+  resolveBangPrefix,
+  type Bang,
+} from "./bangs";
 import { evaluateInlineAnswer } from "./inline-answers";
 import { openInBrowser, openQueryInBrowser } from "./open";
 import {
@@ -56,6 +76,7 @@ import {
   tabJumpTarget,
   type ResultSection,
 } from "./result-order";
+import { loadSession, saveSession } from "./session";
 import {
   FALLBACK_SITE_ENGINES,
   SiteEngine,
@@ -74,6 +95,7 @@ import {
   jumpToTab,
   peekCachedTabs,
 } from "./tabs";
+import { writeLastBrowserHint } from "./last-browser";
 
 type ScopedSite = SiteEngine | null;
 
@@ -98,9 +120,13 @@ export default function Command() {
   const prefs = getPreferenceValues<ExtensionPreferences>();
   const [searchText, setSearchText] = useState("");
   const [scopedSite, setScopedSite] = useState<ScopedSite>(null);
+  const [scopedBang, setScopedBang] = useState<Bang | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | undefined>();
+  const [askAnswer, setAskAnswer] = useState<string | null>(null);
+  const [askLoading, setAskLoading] = useState(false);
   const suggestionAbort = useRef<AbortController | null>(null);
   const selectionPin = useRef<{ id: string | undefined } | null>(null);
+  const sessionRestored = useRef(false);
 
   const {
     data: context,
@@ -112,11 +138,65 @@ export default function Command() {
     if (!context) return;
     if (!context.allowed) {
       void (async () => {
-        await closeMainWindow();
-        await popToRoot();
+        await closeMainWindow({ clearRootSearch: true });
+        await popToRoot({ clearSearchBar: true });
       })();
+      return;
+    }
+    writeLastBrowserHint({
+      bundleId: context.browser.bundleId,
+      name: context.browser.name,
+      recordedAt: Date.now(),
+    });
+    if (sessionRestored.current) return;
+    sessionRestored.current = true;
+    const prior = loadSession(context.browser.bundleId);
+    if (!prior) return;
+    setSearchText(prior.searchText);
+    if (prior.scopedKind === "site" && prior.scopedId) {
+      const engines =
+        siteEnginesFromKeywords(
+          peekCachedEngines(context.browser.bundleId) ?? [],
+        ) || FALLBACK_SITE_ENGINES;
+      const site =
+        engines.find((e) => e.id === prior.scopedId) ??
+        FALLBACK_SITE_ENGINES.find((e) => e.id === prior.scopedId);
+      if (site) setScopedSite(site);
+    }
+    if (prior.scopedKind === "bang" && prior.scopedId) {
+      const bang = FALLBACK_BANGS.find((b) => b.id === prior.scopedId);
+      if (bang) setScopedBang(bang);
     }
   }, [context]);
+
+  useEffect(() => {
+    if (!context?.allowed || !context.browser) return;
+    saveSession(context.browser.bundleId, {
+      searchText,
+      scopedId: scopedBang?.id ?? scopedSite?.id ?? null,
+      scopedKind: scopedBang ? "bang" : scopedSite ? "site" : null,
+    });
+  }, [context, searchText, scopedBang, scopedSite]);
+
+  // Normalize `@youtube query` / `@Ask …` into bang scope + remainder.
+  useEffect(() => {
+    if (scopedBang || scopedSite) return;
+    const parsed = parseBangQuery(searchText);
+    if (!parsed.bangToken || parsed.listingAll) return;
+    if (!parsed.rest && !searchText.includes(" ")) return;
+    const bang = resolveBangPrefix(
+      parsed.bangToken,
+      mergeBangCatalog(FALLBACK_SITE_ENGINES),
+      readBangUsage(),
+    );
+    if (!bang) return;
+    if (parsed.bangToken.toLowerCase() === bang.id.toLowerCase() ||
+        `@${parsed.bangToken}`.toLowerCase() === bang.trigger.toLowerCase()) {
+      enterBangScope(bang);
+      setSearchText(parsed.rest);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchText, scopedBang, scopedSite]);
 
   const bundleId = context?.frontmost?.bundleId ?? "";
   const cachedTabs = bundleId ? peekCachedTabs(bundleId) ?? [] : [];
@@ -142,6 +222,16 @@ export default function Command() {
     if (keywordEngines.length === 0) return FALLBACK_SITE_ENGINES;
     return siteEnginesFromKeywords(keywordEngines);
   }, [keywordEngines]);
+
+  const bangCatalog = useMemo(
+    () => mergeBangCatalog(siteEngines),
+    [siteEngines],
+  );
+  const bangUsage = useMemo(() => readBangUsage(), [searchText, scopedBang]);
+  const rankedBangs = useMemo(
+    () => rankBangs(bangCatalog, bangUsage),
+    [bangCatalog, bangUsage],
+  );
 
   const { data: tabs = cachedTabs, isLoading: isLoadingTabs } =
     useCachedPromise(
@@ -185,6 +275,7 @@ export default function Command() {
       {
         execute: Boolean(context?.allowed && bundleId),
         initialData: cachedHistory,
+        keepPreviousData: true,
       },
     );
 
@@ -214,7 +305,21 @@ export default function Command() {
   const queryScope = parseQueryScope(searchText);
   const filterScope = parseQueryScope(debouncedFilterText);
   const actionScoped = queryScope.mode === "commands";
-  const filterQuery = filterScope.filterQuery;
+  const bangListing = queryScope.mode === "bangs";
+  const bangParse = parseBangQuery(searchText);
+  const activeBang =
+    scopedBang ??
+    (bangParse.bangToken
+      ? resolveBangPrefix(bangParse.bangToken, bangCatalog, bangUsage)
+      : undefined);
+  const filterQuery =
+    scopedBang || (bangParse.bangToken && activeBang)
+      ? bangParse.rest
+      : filterScope.filterQuery;
+  const domainScope =
+    scopedBang?.domains ??
+    scopedSite?.domains ??
+    (activeBang && !bangParse.listingAll ? activeBang.domains : undefined);
 
   const suggestionQuery =
     suggestionsEnabled && !actionScoped && !scopedSite
@@ -222,7 +327,11 @@ export default function Command() {
       : suggestionsEnabled && scopedSite
         ? debouncedSearchText.trim()
         : "";
-  const suggestionYoutube = Boolean(scopedSite && isYouTubeEngine(scopedSite));
+  const suggestionYoutube = Boolean(
+    (scopedSite && isYouTubeEngine(scopedSite)) ||
+      scopedBang?.id === "youtube" ||
+      scopedBang?.domains.some((d) => d.includes("youtube")),
+  );
 
   const { data: suggestions = [] } = useCachedPromise(
     async (query: string, youtube: boolean) => {
@@ -293,28 +402,11 @@ export default function Command() {
   }, [actionScoped, filterQuery, fuseTabs, tabs]);
 
   const filteredHistory = useMemo(() => {
-    if (actionScoped) return [] as HistoryItem[];
-    const q = filterQuery;
-    if (!q) return history.slice(0, HISTORY_EMPTY_LIMIT);
-    return fuseHistory
-      .search(q)
-      .map((r) => r.item)
-      .slice(0, HISTORY_QUERY_LIMIT);
-  }, [actionScoped, filterQuery, fuseHistory, history]);
-
-  const filteredBookmarks = useMemo(() => {
-    if (actionScoped) return [] as BookmarkItem[];
-    const q = filterQuery;
-    if (!q) return bookmarks.slice(0, BOOKMARK_LIMIT);
-    return fuseBookmarks
-      .search(q)
-      .map((r) => r.item)
-      .slice(0, BOOKMARK_LIMIT);
-  }, [actionScoped, filterQuery, fuseBookmarks, bookmarks]);
-
-  const scopedHistory = useMemo(() => {
-    if (!scopedSite) return [] as HistoryItem[];
-    const domainFiltered = filterHistory(history, "", scopedSite.domains, 200);
+    if (actionScoped || bangListing) return [] as HistoryItem[];
+    const domainFiltered =
+      domainScope && domainScope.length > 0
+        ? filterHistory(history, "", domainScope, 200)
+        : history;
     const q = filterQuery;
     if (!q) return domainFiltered.slice(0, HISTORY_EMPTY_LIMIT);
     const fuse = new Fuse(domainFiltered, {
@@ -326,7 +418,55 @@ export default function Command() {
       .search(q)
       .map((r) => r.item)
       .slice(0, HISTORY_QUERY_LIMIT);
-  }, [history, scopedSite, filterQuery]);
+  }, [
+    actionScoped,
+    bangListing,
+    domainScope,
+    filterQuery,
+    history,
+  ]);
+
+  const filteredBookmarks = useMemo(() => {
+    if (actionScoped || bangListing) return [] as BookmarkItem[];
+    const q = filterQuery;
+    if (!q) return bookmarks.slice(0, BOOKMARK_LIMIT);
+    return fuseBookmarks
+      .search(q)
+      .map((r) => r.item)
+      .slice(0, BOOKMARK_LIMIT);
+  }, [actionScoped, bangListing, filterQuery, fuseBookmarks, bookmarks]);
+
+  const scopedHistory = useMemo(() => {
+    const domains = scopedBang?.domains ?? scopedSite?.domains;
+    if (!domains || domains.length === 0) return [] as HistoryItem[];
+    const domainFiltered = filterHistory(history, "", domains, 200);
+    const q = filterQuery;
+    if (!q) return domainFiltered.slice(0, HISTORY_EMPTY_LIMIT);
+    const fuse = new Fuse(domainFiltered, {
+      keys: ["title", "url", "domain"],
+      threshold: 0.4,
+      ignoreLocation: true,
+    });
+    return fuse
+      .search(q)
+      .map((r) => r.item)
+      .slice(0, HISTORY_QUERY_LIMIT);
+  }, [history, scopedBang, scopedSite, filterQuery]);
+
+  const filteredBangs = useMemo(() => {
+    if (!bangListing && !bangParse.bangToken) return [] as Bang[];
+    if (bangListing || bangParse.bangToken === "") return rankedBangs;
+    const token = (bangParse.bangToken ?? "").toLowerCase();
+    return rankedBangs.filter((bang) => {
+      const aliases = [
+        bang.id,
+        bang.name,
+        bang.trigger.replace(/^@/, ""),
+        ...bang.domains,
+      ].map((s) => s.toLowerCase());
+      return aliases.some((a) => a.startsWith(token) || a.includes(token));
+    });
+  }, [bangListing, bangParse.bangToken, rankedBangs]);
 
   const filteredExtensions = useMemo(() => {
     if (actionScoped) return [] as BrowserExtension[];
@@ -390,11 +530,18 @@ export default function Command() {
         isLoadingHistory ||
         isLoadingBookmarks));
 
+  const prefixBang = resolveBangPrefix(
+    searchText.trim().replace(/^@/, ""),
+    bangCatalog,
+    bangUsage,
+  );
+
   const jumpTargetId =
-    scopedSite || actionScoped
+    scopedSite || scopedBang || actionScoped
       ? undefined
       : tabJumpTarget({
           query: searchText,
+          bangIds: prefixBang ? [prefixBang.id] : filteredBangs.map((b) => b.id),
           siteIds: siteMatches.map((site) => site.id),
           tabs: filteredTabs.map((tab) => ({
             windowId: tab.windowId,
@@ -408,13 +555,15 @@ export default function Command() {
   useEffect(() => {
     const id = selectionAfterType({
       query: searchText,
-      scoped: Boolean(scopedSite),
+      scoped: Boolean(scopedSite || scopedBang),
       matchingTabs: filteredTabs.map((tab) => ({
         windowId: tab.windowId,
         tabId: tab.tabId,
         url: tab.url,
       })),
+      historyUrls: filteredHistory.map((item) => item.url),
       commandIds: filteredCommands.map((cmd) => cmd.id),
+      bangIds: filteredBangs.map((b) => b.id),
       answerId: inlineAnswer?.id,
     });
     setSelectedItemId((current) => {
@@ -425,7 +574,16 @@ export default function Command() {
       selectionPin.current = { id };
       return id;
     });
-  }, [searchText, scopedSite, filteredTabs, filteredCommands, inlineAnswer]);
+  }, [
+    searchText,
+    scopedSite,
+    scopedBang,
+    filteredTabs,
+    filteredHistory,
+    filteredCommands,
+    filteredBangs,
+    inlineAnswer,
+  ]);
 
   if (contextError) {
     return (
@@ -446,15 +604,47 @@ export default function Command() {
   const app = context?.frontmost;
   const browser = context?.browser;
 
+  async function closeOmnibarFully() {
+    await popToRoot({ clearSearchBar: true });
+    await closeMainWindow({ clearRootSearch: true });
+  }
+
   async function runAndClose(action: () => Promise<void>) {
     await action();
-    await closeMainWindow();
-    await popToRoot();
+    await closeOmnibarFully();
   }
 
   function enterSiteSearch(site: SiteEngine) {
+    setScopedBang(null);
     setScopedSite(site);
     setSearchText("");
+  }
+
+  function enterBangScope(bang: Bang) {
+    bumpBangUsage(bang.id);
+    setScopedSite(null);
+    setScopedBang(bang);
+    setAskAnswer(null);
+    setSearchText("");
+  }
+
+  async function runAsk(prompt: string) {
+    setAskLoading(true);
+    setAskAnswer(null);
+    try {
+      const result = await askBridge(prompt);
+      if (!result.ok) {
+        await showToast({
+          style: Toast.Style.Failure,
+          title: "@Ask",
+          message: result.error ?? "Ask Bridge failed",
+        });
+        return;
+      }
+      setAskAnswer(result.answer ?? "");
+    } finally {
+      setAskLoading(false);
+    }
   }
 
   const runBrowserCommand = createBrowserActions({
@@ -500,26 +690,40 @@ export default function Command() {
     });
   }
 
-  const placeholder = scopedSite
-    ? `Search ${scopedSite.name}…`
-    : actionScoped
-      ? "Filter actions…"
-      : keywordEngine
-        ? `${keywordEngine.name} — press Tab to jump to action`
-        : browser
-          ? `Search ${browser.name} — / for actions`
-          : "Search…";
+  const placeholder = scopedBang
+    ? scopedBang.kind === "ask"
+      ? "Ask…"
+      : `Search ${scopedBang.trigger}…`
+    : scopedSite
+      ? `Search ${scopedSite.name}…`
+      : bangListing
+        ? "Choose a bang…"
+        : actionScoped
+          ? "Filter actions…"
+          : keywordEngine
+            ? `${keywordEngine.name} — press Tab to jump to action`
+            : browser
+              ? `Search ${browser.name} — @ bangs · / commands`
+              : "Search…";
 
-  const classified = classifyInput(actionScoped ? "" : searchText);
+  const classified = classifyInput(
+    actionScoped || bangListing ? "" : filterQuery || searchText,
+  );
   const showSearchRow =
-    !actionScoped && Boolean(searchText.trim()) && !inlineAnswer;
+    !actionScoped &&
+    !bangListing &&
+    Boolean((filterQuery || searchText).trim()) &&
+    !inlineAnswer &&
+    scopedBang?.kind !== "ask";
   const primaryTitle = !showSearchRow
     ? null
     : classified.kind === "url"
       ? `Open ${classified.value}`
-      : scopedSite
-        ? `Search ${scopedSite.name} for “${searchText.trim()}”`
-        : `Search “${searchText.trim()}”`;
+      : scopedBang
+        ? `Search ${scopedBang.name} for “${(filterQuery || searchText).trim()}”`
+        : scopedSite
+          ? `Search ${scopedSite.name} for “${searchText.trim()}”`
+          : `Search “${searchText.trim()}”`;
 
   function jumpToAction() {
     if (!jumpTargetId) return;
@@ -535,30 +739,109 @@ export default function Command() {
   }
 
   function handleSearchTextChange(next: string) {
-    if (scopedSite && searchText.length > 0 && next.length === 0) {
+    if (
+      (scopedSite || scopedBang) &&
+      searchText.length > 0 &&
+      next.length === 0
+    ) {
       setSearchText("");
       return;
     }
-    if (scopedSite && searchText.length === 0 && next.length === 0) {
+    if (
+      (scopedSite || scopedBang) &&
+      searchText.length === 0 &&
+      next.length === 0
+    ) {
+      setScopedSite(null);
+      setScopedBang(null);
+      setAskAnswer(null);
       return;
     }
     setSearchText(next);
   }
 
-  const engineBadgeColor = scopedSite
+  function jumpToActionOrBang() {
+    if (prefixBang && !scopedBang && !searchText.includes(" ")) {
+      enterBangScope(prefixBang);
+      return;
+    }
+    jumpToAction();
+  }
+
+  const engineBadgeColor = scopedBang || scopedSite
     ? Color.Red
     : keywordEngine
       ? Color.Orange
       : Color.SecondaryText;
 
   const scopedSuggestions =
-    scopedSite && suggestionQuery.length > 0 ? suggestions : [];
+    (scopedSite || (scopedBang && scopedBang.kind === "site")) &&
+    suggestionQuery.length > 0
+      ? suggestions
+      : [];
   const globalSuggestions =
-    !scopedSite && !actionScoped && suggestionQuery.length > 0
+    !scopedSite &&
+    !scopedBang &&
+    !actionScoped &&
+    !bangListing &&
+    suggestionQuery.length > 0
       ? suggestions
       : [];
 
+  function closeAction() {
+    return (
+      <Action
+        title="Close Omnibar"
+        icon={Icon.XmarkCircle}
+        shortcut={{ modifiers: [], key: "escape" }}
+        onAction={() => {
+          void closeOmnibarFully();
+        }}
+      />
+    );
+  }
+
   function renderUnscopedSection(section: ResultSection) {
+    if (section === "bangs") {
+      if (filteredBangs.length === 0) return null;
+      return (
+        <List.Section key="bangs" title="Bangs" subtitle={`${filteredBangs.length}`}>
+          {filteredBangs.map((bang) => (
+            <List.Item
+              key={bang.id}
+              id={bangItemId(bang.id)}
+              title={bang.trigger}
+              subtitle={bang.name}
+              icon={bang.kind === "ask" ? Icon.SpeechBubble : Icon.Hashtag}
+              accessories={[
+                {
+                  tag: {
+                    value: bang.kind === "ask" ? "Ask" : "Bang",
+                    color: Color.Purple,
+                  },
+                },
+              ]}
+              actions={
+                <ActionPanel>
+                  <Action
+                    title={`Use ${bang.trigger}`}
+                    icon={Icon.ArrowRight}
+                    onAction={() => enterBangScope(bang)}
+                  />
+                  {prefixBang?.id === bang.id && jumpTargetId && (
+                    <JumpToAction
+                      onJump={() => enterBangScope(bang)}
+                    />
+                  )}
+                  {closeAction()}
+                </ActionPanel>
+              }
+            />
+          ))}
+        </List.Section>
+      );
+    }
+
     if (section === "answers") {
       if (!inlineAnswer) return null;
       return (
@@ -615,7 +898,10 @@ export default function Command() {
                     })
                   }
                 />
-                {jumpTargetId && <JumpToAction onJump={jumpToAction} />}
+                {jumpTargetId && (
+                  <JumpToAction onJump={jumpToActionOrBang} />
+                )}
+                {closeAction()}
               </ActionPanel>
             }
           />
@@ -634,14 +920,25 @@ export default function Command() {
         >
           {filteredHistory.map((item) => (
             <HistoryListItem
-              key={`hist-${item.url}`}
+              key={historyItemId(item.url)}
               item={item}
               onOpen={() =>
                 runAndClose(async () => {
                   await openInBrowser(app, item.url);
                 })
               }
-              onJumpToAction={jumpTargetId ? jumpToAction : undefined}
+              onSearchQuery={
+                app
+                  ? () =>
+                      runAndClose(async () => {
+                        await openQueryInBrowser(app, searchText);
+                      })
+                  : undefined
+              }
+              onJumpToAction={
+                jumpTargetId ? jumpToActionOrBang : undefined
+              }
+              trailingActions={closeAction()}
             />
           ))}
         </List.Section>
@@ -889,9 +1186,98 @@ export default function Command() {
         setSelectedItemId(next);
       }}
     >
-      {scopedSite ? (
+      {scopedSite || scopedBang ? (
         <>
-          {primaryTitle && app && (
+          {scopedBang?.kind === "ask" && (
+            <List.Section title="@Ask">
+              <List.Item
+                id={SCOPED_SEARCH_ITEM_ID}
+                title={
+                  searchText.trim()
+                    ? `Ask “${searchText.trim()}”`
+                    : "Type a question…"
+                }
+                subtitle={askLoading ? "Thinking…" : askAnswer ?? undefined}
+                icon={Icon.SpeechBubble}
+                actions={
+                  <ActionPanel>
+                    <Action
+                      title="Ask"
+                      icon={Icon.SpeechBubble}
+                      onAction={() => {
+                        void runAsk(searchText.trim());
+                      }}
+                    />
+                    {askAnswer ? (
+                      <Action.CopyToClipboard
+                        title="Copy Answer"
+                        content={askAnswer}
+                      />
+                    ) : null}
+                    <Action
+                      title="Exit Bang"
+                      icon={Icon.Undo}
+                      shortcut={{ modifiers: [], key: "backspace" }}
+                      onAction={() => {
+                        setScopedBang(null);
+                        setAskAnswer(null);
+                        setSearchText("");
+                      }}
+                    />
+                    {closeAction()}
+                  </ActionPanel>
+                }
+              />
+            </List.Section>
+          )}
+          {scopedBang && scopedBang.kind === "site" && primaryTitle && app && (
+            <List.Section title={scopedBang.trigger}>
+              <List.Item
+                id={SCOPED_SEARCH_ITEM_ID}
+                title={primaryTitle}
+                icon={{ source: Icon.MagnifyingGlass, tintColor: Color.Red }}
+                accessories={[
+                  {
+                    tag: {
+                      value: scopedBang.trigger,
+                      color: Color.Red,
+                    },
+                  },
+                ]}
+                actions={
+                  <ActionPanel>
+                    <Action
+                      title={`Search ${scopedBang.name}`}
+                      icon={Icon.MagnifyingGlass}
+                      onAction={() =>
+                        runAndClose(async () => {
+                          bumpBangUsage(scopedBang.id);
+                          await openInBrowser(
+                            app,
+                            buildBangSearchUrl(
+                              scopedBang,
+                              searchText.trim(),
+                            ),
+                          );
+                        })
+                      }
+                    />
+                    <Action
+                      title="Exit Bang"
+                      icon={Icon.Undo}
+                      shortcut={{ modifiers: [], key: "backspace" }}
+                      onAction={() => {
+                        setScopedBang(null);
+                        setSearchText("");
+                      }}
+                    />
+                    {closeAction()}
+                  </ActionPanel>
+                }
+              />
+            </List.Section>
+          )}
+          {scopedSite && primaryTitle && app && (
             <List.Section title={scopedSite.name}>
               <List.Item
                 id={SCOPED_SEARCH_ITEM_ID}
@@ -928,12 +1314,13 @@ export default function Command() {
                         setSearchText("");
                       }}
                     />
+                    {closeAction()}
                   </ActionPanel>
                 }
               />
             </List.Section>
           )}
-          {!searchText.trim() && (
+          {scopedSite && !searchText.trim() && (
             <List.Section title={scopedSite.name}>
               <List.Item
                 title={`Search ${scopedSite.name}…`}
@@ -958,6 +1345,7 @@ export default function Command() {
                         setSearchText("");
                       }}
                     />
+                    {closeAction()}
                   </ActionPanel>
                 }
               />
@@ -970,20 +1358,29 @@ export default function Command() {
             >
               {scopedHistory.map((item) => (
                 <HistoryListItem
-                  key={`scoped-hist-${item.url}`}
+                  key={historyItemId(item.url)}
                   item={item}
                   onOpen={() =>
                     runAndClose(async () => {
                       await openInBrowser(app, item.url);
                     })
                   }
+                  trailingActions={closeAction()}
                 />
               ))}
             </List.Section>
           )}
-          {scopedSuggestions.length > 0 && (
+          {scopedSuggestions.length > 0 && (scopedSite || scopedBang) && (
             <List.Section title="Suggestions">
-              {scopedSuggestions.map((suggestion) => (
+              {scopedSuggestions.map((suggestion) => {
+                const scopeName =
+                  scopedSite?.name ?? scopedBang?.name ?? "Search";
+                const buildScopedUrl = (q: string) => {
+                  if (scopedSite) return scopedSite.buildUrl(q);
+                  if (scopedBang) return buildBangSearchUrl(scopedBang, q);
+                  return q;
+                };
+                return (
                 <List.Item
                   key={`sug-${suggestion}`}
                   title={suggestion}
@@ -994,7 +1391,7 @@ export default function Command() {
                   accessories={[
                     {
                       tag: {
-                        value: scopedSite.name,
+                        value: scopeName,
                         color: Color.Red,
                       },
                     },
@@ -1002,27 +1399,32 @@ export default function Command() {
                   actions={
                     <ActionPanel>
                       <Action
-                        title={`Search ${scopedSite.name}`}
+                        title={`Search ${scopeName}`}
                         icon={Icon.MagnifyingGlass}
                         onAction={() =>
                           runAndClose(async () => {
                             if (!app) return;
                             await openInBrowser(
                               app,
-                              scopedSite.buildUrl(suggestion),
+                              buildScopedUrl(suggestion),
                             );
                           })
                         }
                       />
                       <Action
-                        title="Exit Site Search"
+                        title="Exit Scope"
                         icon={Icon.Undo}
-                        onAction={() => setScopedSite(null)}
+                        onAction={() => {
+                          setScopedSite(null);
+                          setScopedBang(null);
+                        }}
                       />
+                      {closeAction()}
                     </ActionPanel>
                   }
                 />
-              ))}
+              );
+              })}
             </List.Section>
           )}
         </>
@@ -1089,12 +1491,15 @@ function JumpToAction(props: { onJump: () => void }) {
 function HistoryListItem(props: {
   item: HistoryItem;
   onOpen: () => void;
+  onSearchQuery?: () => void;
   onJumpToAction?: () => void;
+  trailingActions?: ReactNode;
 }) {
-  const { item, onOpen, onJumpToAction } = props;
+  const { item, onOpen, onSearchQuery, onJumpToAction, trailingActions } =
+    props;
   return (
     <List.Item
-      id={`hist-${item.url}`}
+      id={historyItemId(item.url)}
       title={item.title}
       subtitle={item.domain}
       icon={Icon.Clock}
@@ -1102,6 +1507,14 @@ function HistoryListItem(props: {
       actions={
         <ActionPanel>
           <Action title="Open" icon={Icon.Globe} onAction={onOpen} />
+          {onSearchQuery && (
+            <Action
+              title="Search Query in Browser"
+              icon={Icon.MagnifyingGlass}
+              shortcut={{ modifiers: ["cmd"], key: "return" }}
+              onAction={onSearchQuery}
+            />
+          )}
           {onJumpToAction && <JumpToAction onJump={onJumpToAction} />}
           <Action.CopyToClipboard
             title="Copy URL"
@@ -1111,6 +1524,7 @@ function HistoryListItem(props: {
             title="Copy as Markdown"
             content={formatMarkdownLink(item.title, item.url)}
           />
+          {trailingActions}
         </ActionPanel>
       }
     />
