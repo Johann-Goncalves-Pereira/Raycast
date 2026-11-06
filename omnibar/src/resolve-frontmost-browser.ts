@@ -1,15 +1,17 @@
-import { Application, getFrontmostApplication } from "@raycast/api";
+import {
+  Application,
+  getApplications,
+  getFrontmostApplication,
+} from "@raycast/api";
+import { fallbackAppPath, preferInstalledAppPath } from "./app-icon";
+import { browserForOmnibarOpen } from "./pick-running-browser";
+import { contextFromHint } from "./hint-context";
 import { execFileSync } from "node:child_process";
-import {
-  findBrowserByBundleId,
-  type BrowserDefinition,
-} from "./browser-catalog";
-import {
-  ExtensionPreferences,
-  isBrowserExcluded,
-} from "./browsers";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { type BrowserDefinition } from "./browser-catalog";
+import { ExtensionPreferences } from "./browsers";
 import { readLastBrowserHint } from "./last-browser";
-import { pickRunningBrowser } from "./pick-running-browser";
 
 const RAYCAST_BUNDLE_IDS = new Set([
   "com.raycast.macos",
@@ -69,61 +71,58 @@ function asApplication(bundleId: string, name: string): Application {
   return { name, path: "", bundleId };
 }
 
+async function withInstalledIcon(app: Application): Promise<Application> {
+  if (app.path) return app;
+  try {
+    const installed = await getApplications();
+    const resolved = preferInstalledAppPath(app, installed);
+    const path =
+      resolved.path ||
+      fallbackAppPath(resolved.bundleId, homedir(), existsSync);
+    return { ...app, path, name: resolved.name };
+  } catch {
+    return app;
+  }
+}
+
 /**
  * Deeplink/hotkey often focuses Raycast first. Prefer the true frontmost browser,
- * otherwise the first running allowed browser from the catalog order.
+ * otherwise the Cmd+P hint, then the first running allowed browser.
  */
 export async function resolveOmnibarContext(
   prefs?: ExtensionPreferences,
 ): Promise<OmnibarContext> {
+  const hint = readLastBrowserHint();
+  const hinted = contextFromHint(hint, prefs, (bundleId) =>
+    fallbackAppPath(bundleId, homedir(), existsSync),
+  );
+  if (hinted?.allowed && hinted.frontmost.path) return hinted;
+
   const frontmost = await getFrontmostApplication();
   const frontBundle = frontmost.bundleId ?? "";
-
-  if (!RAYCAST_BUNDLE_IDS.has(frontBundle)) {
-    const browser = findBrowserByBundleId(frontBundle);
-    if (browser && !isBrowserExcluded(frontBundle, prefs)) {
-      return { frontmost, browser, allowed: true };
-    }
-    return { frontmost, browser: null, allowed: false };
-  }
-
-  // Cmd+P helper writes the real frontmost browser before Raycast activates.
-  const hint = readLastBrowserHint();
-  if (hint) {
-    const hinted =
-      findBrowserByBundleId(hint.bundleId) ??
-      (hint.bundleId === "net.imput.helium.helper"
-        ? findBrowserByBundleId("net.imput.helium")
-        : undefined);
-    if (hinted && !isBrowserExcluded(hinted.bundleId, prefs)) {
-      return {
-        frontmost: asApplication(
-          hinted.bundleId,
-          hint.name || hinted.name,
-        ),
-        browser: hinted,
-        allowed: true,
-      };
-    }
-  }
-
   const running = runningApplications();
-  const byBundle = new Map(running.map((r) => [r.bundleId, r]));
-  const picked = pickRunningBrowser(
-    running.map((r) => r.bundleId),
+  const browser = browserForOmnibarOpen({
+    frontBundle,
+    hintBundleId: hint?.bundleId,
+    runningBundleIds: running.map((item) => item.bundleId),
     prefs,
-  );
-  if (picked) {
-    const hit = byBundle.get(picked.bundleId);
+  });
+  if (!browser) return { frontmost, browser: null, allowed: false };
+
+  if (browser.bundleId === frontBundle) {
     return {
-      frontmost: asApplication(
-        picked.bundleId,
-        hit?.name || picked.name,
-      ),
-      browser: picked,
+      frontmost: await withInstalledIcon(frontmost),
+      browser,
       allowed: true,
     };
   }
 
-  return { frontmost, browser: null, allowed: false };
+  const hit = running.find((item) => item.bundleId === browser.bundleId);
+  return {
+    frontmost: await withInstalledIcon(
+      asApplication(browser.bundleId, hint?.name || hit?.name || browser.name),
+    ),
+    browser,
+    allowed: true,
+  };
 }
