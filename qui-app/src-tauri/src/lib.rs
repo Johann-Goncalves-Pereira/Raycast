@@ -5,12 +5,124 @@ use std::fs;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
 const CONTAINER_NAME: &str = "qui";
 const IMAGE_NAME: &str = "ghcr.io/autobrr/qui:latest";
 const QUI_PORT: u16 = 7476;
+
+const SQUIRCLE_INJECTION_SCRIPT: &str = r#"
+(function() {
+  function applySquircleTheme() {
+    if (!document.getElementById('tauri-squircle-style')) {
+      const style = document.createElement('style');
+      style.id = 'tauri-squircle-style';
+      style.textContent = `
+        html, body {
+          border-radius: 22px !important;
+          overflow: hidden !important;
+          background-color: rgba(15, 17, 23, 0.72) !important;
+          -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+          backdrop-filter: blur(40px) saturate(180%) !important;
+          box-sizing: border-box !important;
+          border: 1px solid rgba(255, 255, 255, 0.12) !important;
+          -webkit-mask-image: -webkit-radial-gradient(white, black) !important;
+        }
+        #root {
+          background: transparent !important;
+        }
+        .tauri-drag-strip {
+          position: fixed !important;
+          top: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          height: 26px !important;
+          z-index: 999999 !important;
+          -webkit-app-region: drag !important;
+          pointer-events: auto !important;
+        }
+        .tauri-floating-controls {
+          position: fixed !important;
+          top: 10px !important;
+          left: 12px !important;
+          z-index: 1000000 !important;
+          display: flex !important;
+          align-items: center !important;
+          gap: 7px !important;
+          opacity: 0.2 !important;
+          transition: opacity 0.2s ease, transform 0.2s ease !important;
+          -webkit-app-region: no-drag !important;
+          padding: 4px 6px !important;
+          border-radius: 12px !important;
+          background: rgba(0, 0, 0, 0.25) !important;
+          backdrop-filter: blur(8px) !important;
+          -webkit-backdrop-filter: blur(8px) !important;
+        }
+        .tauri-floating-controls:hover {
+          opacity: 1 !important;
+          background: rgba(0, 0, 0, 0.5) !important;
+          transform: scale(1.02) !important;
+        }
+        .tauri-ctrl-btn {
+          width: 12px !important;
+          height: 12px !important;
+          border-radius: 50% !important;
+          border: none !important;
+          cursor: pointer !important;
+        }
+        .tauri-ctrl-btn.close { background-color: #ff5f56 !important; border: 1px solid #e0443e !important; }
+        .tauri-ctrl-btn.minimize { background-color: #ffbd2e !important; border: 1px solid #dea123 !important; }
+        .tauri-ctrl-btn.maximize { background-color: #27c93f !important; border: 1px solid #1aab29 !important; }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    }
+
+    if (!document.querySelector('.tauri-drag-strip')) {
+      const drag = document.createElement('div');
+      drag.className = 'tauri-drag-strip';
+      drag.setAttribute('data-tauri-drag-region', 'true');
+      (document.body || document.documentElement).appendChild(drag);
+    }
+
+    if (!document.querySelector('.tauri-floating-controls')) {
+      const nav = document.createElement('nav');
+      nav.className = 'tauri-floating-controls';
+      nav.innerHTML = `
+        <button class="tauri-ctrl-btn close" title="Close & Stop Qui (Cmd+W)"></button>
+        <button class="tauri-ctrl-btn minimize" title="Minimize (Cmd+M)"></button>
+        <button class="tauri-ctrl-btn maximize" title="Maximize"></button>
+      `;
+      nav.querySelector('.close')?.addEventListener('click', () => {
+        window.__TAURI__?.core?.invoke?.('close_app') || window.close();
+      });
+      nav.querySelector('.minimize')?.addEventListener('click', () => {
+        window.__TAURI__?.core?.invoke?.('minimize_window');
+      });
+      nav.querySelector('.maximize')?.addEventListener('click', () => {
+        window.__TAURI__?.core?.invoke?.('toggle_maximize');
+      });
+      (document.body || document.documentElement).appendChild(nav);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', applySquircleTheme);
+  window.addEventListener('load', applySquircleTheme);
+  setInterval(applySquircleTheme, 1000);
+
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'w' || e.key === 'q')) {
+      e.preventDefault();
+      window.__TAURI__?.core?.invoke?.('close_app') || window.close();
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || (e.shiftKey && e.key === 'Z'))) {
+      e.preventDefault();
+      window.__TAURI__?.core?.invoke?.('open_in_zen_container');
+    }
+  });
+})();
+"#;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartupStatus {
@@ -70,7 +182,6 @@ fn ensure_docker_daemon() -> Result<(), String> {
         return Ok(());
     }
 
-    // Try starting Colima if available
     let _ = run_cmd("colima", &["start"]);
     for _ in 0..30 {
         if run_cmd("docker", &["info"]).is_ok() {
@@ -79,7 +190,6 @@ fn ensure_docker_daemon() -> Result<(), String> {
         thread::sleep(Duration::from_millis(1000));
     }
 
-    // Fallback: try opening Docker Desktop
     let _ = run_cmd("open", &["-a", "Docker"]);
     for _ in 0..20 {
         if run_cmd("docker", &["info"]).is_ok() {
@@ -187,13 +297,20 @@ fn wait_for_qui_ready(timeout_secs: u64) -> Result<(), String> {
     ))
 }
 
-#[tauri::command]
-fn start_and_update_qui() -> Result<StartupStatus, String> {
+static STARTUP_LOCK: Mutex<()> = Mutex::new(());
+
+fn perform_qui_startup() -> Result<bool, String> {
+    let _guard = STARTUP_LOCK.lock().map_err(|e| e.to_string())?;
     ensure_docker_daemon()?;
     let updated = pull_and_update_image().unwrap_or(false);
     start_qui_container(updated)?;
     wait_for_qui_ready(30)?;
+    Ok(updated)
+}
 
+#[tauri::command]
+fn start_and_update_qui() -> Result<StartupStatus, String> {
+    let updated = perform_qui_startup()?;
     Ok(StartupStatus {
         success: true,
         message: "Qui is running and ready.".into(),
@@ -212,14 +329,19 @@ fn open_in_zen_container() -> Result<(), String> {
     let url = format!("http://localhost:{}", QUI_PORT);
     let container_url = format!("ext+container:name=Annonimo&url={}", url);
 
-    // Try opening via registered protocol handler in Zen
     let res = run_cmd("open", &["-a", "Zen", &container_url]);
     if res.is_ok() {
         return Ok(());
     }
 
-    // Fallback: open URL directly in Zen
     run_cmd("open", &["-a", "Zen", &url]).map(|_| ())
+}
+
+#[tauri::command]
+fn navigate_to_qui(window: tauri::WebviewWindow) -> Result<(), String> {
+    let url = tauri::Url::parse(&format!("http://localhost:{}/", QUI_PORT))
+        .map_err(|e| e.to_string())?;
+    window.navigate(url).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -246,6 +368,40 @@ fn close_app(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn setup_macos_vibrancy(window: &tauri::WebviewWindow) {
+    let _ = window_vibrancy::apply_vibrancy(
+        window,
+        window_vibrancy::NSVisualEffectMaterial::FullScreenUI,
+        Some(window_vibrancy::NSVisualEffectState::Active),
+        Some(22.0),
+    );
+}
+
+fn create_main_window(
+    app: &tauri::App,
+) -> Result<tauri::WebviewWindow, Box<dyn Error>> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::default(),
+    )
+    .title("Qui")
+    .inner_size(1360.0, 880.0)
+    .min_inner_size(900.0, 620.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .shadow(true)
+    .initialization_script(SQUIRCLE_INJECTION_SCRIPT)
+    .build()?;
+
+    #[cfg(target_os = "macos")]
+    setup_macos_vibrancy(&window);
+
+    Ok(window)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> Result<(), Box<dyn Error>> {
     tauri::Builder::default()
@@ -257,6 +413,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                         .build(),
                 )?;
             }
+
+            let _main_window = create_main_window(app)?;
+
             Ok(())
         })
         .on_window_event(|_window, event| {
@@ -269,6 +428,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             start_and_update_qui,
             stop_qui,
             open_in_zen_container,
+            navigate_to_qui,
             minimize_window,
             toggle_maximize,
             close_app

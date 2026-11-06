@@ -7,5 +7,11 @@
   ],
   "permissions": [
     "core:default"
-  ]
+  ],
+  "remote": {
+    "urls": [
+      "http://localhost:7476/*",
+      "http://127.0.0.1:7476/*"
+    ]
+  }
 }
