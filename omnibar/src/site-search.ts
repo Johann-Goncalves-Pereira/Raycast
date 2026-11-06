@@ -249,6 +249,64 @@ export async function fetchYouTubeSuggestions(
   }
 }
 
+export type SuggestionKind = "youtube" | "github" | "duckduckgo";
+
+export function suggestionKindForScope(input: {
+  bangId?: string;
+  domains?: readonly string[];
+}): SuggestionKind {
+  const id = input.bangId?.toLowerCase() ?? "";
+  const domains = input.domains ?? [];
+  if (id === "youtube" || domains.some((domain) => domain.includes("youtube"))) {
+    return "youtube";
+  }
+  if (
+    id === "github" ||
+    domains.some((domain) => domain.replace(/^www\./, "").includes("github.com"))
+  ) {
+    return "github";
+  }
+  return "duckduckgo";
+}
+
+export function githubRepositoryNames(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object" || !("items" in payload)) {
+    return [];
+  }
+  const items = (payload as { items?: unknown }).items;
+  if (!Array.isArray(items)) return [];
+  const names: string[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object" || !("full_name" in item)) continue;
+    const name = (item as { full_name?: unknown }).full_name;
+    if (typeof name === "string" && name.length > 0) names.push(name);
+  }
+  return names.slice(0, 8);
+}
+
+export async function fetchGitHubSuggestions(
+  query: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (!query.trim()) return [];
+  try {
+    const response = await fetch(
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=8`,
+      {
+        signal,
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "omnibar",
+        },
+      },
+    );
+    if (!response.ok) return [];
+    return githubRepositoryNames(await response.json());
+  } catch {
+    return [];
+  }
+}
+
 export function isYouTubeEngine(engine: SiteEngine): boolean {
   return (
     engine.domains.some((d) => d.includes("youtube")) ||
