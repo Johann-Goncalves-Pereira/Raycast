@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { brandColor, faviconUrl, historyLinkLogo, siteIcon } from "./site-mark";
+import {
+  brandColor,
+  faviconUrl,
+  historyLinkLogo,
+  siteIcon,
+  SQUIRCLE_MASK,
+} from "./site-mark";
 
 describe("faviconUrl", () => {
   it("asks Google for the site's icon", () => {
@@ -30,19 +36,23 @@ describe("brandColor", () => {
 });
 
 describe("historyLinkLogo", () => {
-  it("uses the link's own site logo beside the history icon", () => {
+  it("uses the link's own site logo beside the history icon with rounded corners", () => {
     assert.deepEqual(historyLinkLogo("github.com"), {
       source: faviconUrl("github.com"),
+      mask: SQUIRCLE_MASK,
     });
+    assert.equal(historyLinkLogo("github.com")?.mask, "roundedRectangle");
     assert.equal(historyLinkLogo("  "), null);
   });
 });
 
 describe("siteIcon", () => {
-  it("uses the first domain as the logo", () => {
+  it("uses the first domain as the logo with squircle rounded corners", () => {
     assert.deepEqual(siteIcon(["youtube.com", "youtu.be"]), {
       source: faviconUrl("youtube.com"),
+      mask: SQUIRCLE_MASK,
     });
+    assert.equal(siteIcon(["youtube.com"])?.mask, "roundedRectangle");
   });
 
   it("has no logo without a domain", () => {
