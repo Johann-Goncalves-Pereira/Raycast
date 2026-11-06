@@ -32,6 +32,39 @@ function writeStore(store: SessionStore): void {
   writeFileSync(sessionPath(), JSON.stringify(store), "utf8");
 }
 
+/** Session written after Enter sends a query, tab, or URL to the browser. */
+export function clearedSession(): Omit<OmnibarSession, "updatedAt"> {
+  return { searchText: "", scopedId: null, scopedKind: null };
+}
+
+/** A draft older than this opens as an empty bar. */
+export const CLEAN_SLATE_AFTER_MS = 2_000;
+
+/** Fields to show when Omnibar switches to `prior`'s browser. Missing means empty. */
+export function sessionFields(
+  prior: OmnibarSession | undefined,
+): Omit<OmnibarSession, "updatedAt"> {
+  if (!prior) return clearedSession();
+  return {
+    searchText: prior.searchText,
+    scopedId: prior.scopedId,
+    scopedKind: prior.scopedKind,
+  };
+}
+
+/** Reopening after two seconds drops the draft. A quicker reopen keeps it. */
+export function sessionForOpen(input: {
+  session: OmnibarSession | undefined;
+  now: number;
+  maxAgeMs?: number;
+}): Omit<OmnibarSession, "updatedAt"> {
+  const session = input.session;
+  if (!session) return clearedSession();
+  const maxAge = input.maxAgeMs ?? CLEAN_SLATE_AFTER_MS;
+  if (input.now - session.updatedAt >= maxAge) return clearedSession();
+  return sessionFields(session);
+}
+
 export function loadSession(bundleId: string): OmnibarSession | undefined {
   return readStore()[bundleId];
 }
