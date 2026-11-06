@@ -1,12 +1,19 @@
 # Omnibar — Omnibar Cmd+P for browsers
 
+Behaviors that must not regress are listed in [docs/behaviors.md](docs/behaviors.md), each with the test that locks it.
+
 Local Raycast extension. When a Chromium/WebKit browser is frontmost, **⌘P** opens an Arc-like command bar: **Switch to Tab** first, MRU zero-state, history, bookmarks, web/site search, portable browser commands, Supercopy, and inline math — without Arc-only shell features (Spaces, Little Arc, Split, Easels).
 
 ## Setup
 
-1. In Raycast: **Import Extension** → choose `omnibar/`
-2. Or from this folder: `npm install && npm run dev`
-3. Apply / repair the Karabiner Cmd+P binding:
+1. Install or refresh this Mac (Cmd+P helper, Ask Bridge, and the Raycast extension). This publishes the extension and then stops the development watcher, so the commands stay off the empty Raycast bar:
+
+```bash
+npm run update
+```
+
+   Run that again after pulling new Omnibar changes. `npm run dev` is only for a live editing session; it puts the commands back on the empty bar until you run `npm run update` again.
+2. Apply / repair the Karabiner Cmd+P binding:
 
 ```bash
 npm run apply-karabiner   # write the rule into ~/.config/karabiner/karabiner.json
@@ -15,7 +22,7 @@ npm run fix-karabiner     # diagnose daemons, open permission panes, re-apply ru
 
    Or from Raycast: run **Apply Browser Exclusions**
 
-4. If the extension still shows the old purple icon in Raycast, run:
+3. If the extension still shows the old purple icon in Raycast, run:
 
 ```bash
 npm run refresh-icon
@@ -23,10 +30,10 @@ npm run refresh-icon
 
 Then in Raycast: **Omnibar → Actions (⌘K) → Development → Clear Local Assets Cache**
 
-5. Grant **Automation** access for Raycast → each browser (System Settings → Privacy & Security → Automation)
+4. Grant **Automation** access for Raycast → each browser (System Settings → Privacy & Security → Automation)
 
 Karabiner rule description: `Cmd+P → Omnibar when browser frontmost`  
-Deeplink: `raycast://extensions/johann_goncalves_pereira/omnibar/search`
+Deeplink: `raycast://extensions/johann_goncalves_pereira/omnibar/search` (Cmd+P in Zen, Helium, Safari, or Chrome opens that browser's icon command)
 
 ## If ⌘P still opens a new tab (Karabiner not running)
 
