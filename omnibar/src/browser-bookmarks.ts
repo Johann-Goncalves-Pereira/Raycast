@@ -125,6 +125,38 @@ export function getBrowserBookmarks(
   }
 }
 
+function hostMatches(domain: string, filters: readonly string[]): boolean {
+  const host = domain.toLowerCase();
+  return filters.some((filter) => {
+    const normalized = filter.replace(/^www\./, "").toLowerCase();
+    return host === normalized || host.endsWith(`.${normalized}`);
+  });
+}
+
+/** Bookmarks inside a bang stay on that site. */
+export function filterBookmarks(
+  items: BookmarkItem[],
+  query: string,
+  domainFilter?: string[],
+  limit = 12,
+): BookmarkItem[] {
+  const domains = domainFilter?.filter(Boolean) ?? [];
+  let filtered =
+    domains.length > 0
+      ? items.filter((item) => hostMatches(item.domain, domains))
+      : items;
+  const q = query.trim().toLowerCase();
+  if (q) {
+    filtered = filtered.filter(
+      (item) =>
+        item.title.toLowerCase().includes(q) ||
+        item.url.toLowerCase().includes(q) ||
+        item.domain.toLowerCase().includes(q),
+    );
+  }
+  return filtered.slice(0, limit);
+}
+
 /** Synchronous stale seed for Raycast List first paint. */
 export function peekCachedBookmarks(
   bundleId: string,

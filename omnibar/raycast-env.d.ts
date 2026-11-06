@@ -50,14 +50,34 @@ declare type Preferences = ExtensionPreferences
 declare namespace Preferences {
   /** Preferences accessible in the `search` command */
   export type Search = ExtensionPreferences & {}
-  /** Preferences accessible in the `apply-exclusions` command */
-  export type ApplyExclusions = ExtensionPreferences & {}
+  /** Preferences accessible in the `cmd-chrome` command */
+  export type CmdChrome = ExtensionPreferences & {}
+  /** Preferences accessible in the `cmd-chrome-dev` command */
+  export type CmdChromeDev = ExtensionPreferences & {}
+  /** Preferences accessible in the `cmd-safari` command */
+  export type CmdSafari = ExtensionPreferences & {}
+  /** Preferences accessible in the `cmd-helium` command */
+  export type CmdHelium = ExtensionPreferences & {}
+  /** Preferences accessible in the `cmd-zen` command */
+  export type CmdZen = ExtensionPreferences & {}
+  /** Preferences accessible in the `sync-browser-exclusions` command */
+  export type SyncBrowserExclusions = ExtensionPreferences & {}
 }
 
 declare namespace Arguments {
   /** Arguments passed to the `search` command */
   export type Search = {}
-  /** Arguments passed to the `apply-exclusions` command */
-  export type ApplyExclusions = {}
+  /** Arguments passed to the `cmd-chrome` command */
+  export type CmdChrome = {}
+  /** Arguments passed to the `cmd-chrome-dev` command */
+  export type CmdChromeDev = {}
+  /** Arguments passed to the `cmd-safari` command */
+  export type CmdSafari = {}
+  /** Arguments passed to the `cmd-helium` command */
+  export type CmdHelium = {}
+  /** Arguments passed to the `cmd-zen` command */
+  export type CmdZen = {}
+  /** Arguments passed to the `sync-browser-exclusions` command */
+  export type SyncBrowserExclusions = {}
 }
 

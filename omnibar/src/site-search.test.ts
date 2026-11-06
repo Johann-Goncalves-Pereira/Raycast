@@ -4,10 +4,12 @@ import type { BrowserDefinition } from "./browser-catalog";
 import {
   FALLBACK_SITE_ENGINES,
   findSiteEngineByDomain,
+  githubRepositoryNames,
   isYouTubeEngine,
   loadSiteEngines,
   matchingSiteEngines,
   resolveEngineKeyword,
+  suggestionKindForScope,
 } from "./site-search";
 
 const engines = [
@@ -99,6 +101,39 @@ const safariBrowser: BrowserDefinition = {
   bundleId: "com.apple.Safari",
   engine: "webkit",
 };
+
+describe("suggestionKindForScope", () => {
+  it("uses YouTube and GitHub suggest endpoints for those bangs", () => {
+    assert.equal(
+      suggestionKindForScope({ bangId: "youtube", domains: ["youtube.com"] }),
+      "youtube",
+    );
+    assert.equal(
+      suggestionKindForScope({ bangId: "github", domains: ["github.com"] }),
+      "github",
+    );
+  });
+
+  it("keeps other site bangs on the general suggestions", () => {
+    assert.equal(
+      suggestionKindForScope({ bangId: "reddit", domains: ["reddit.com"] }),
+      "duckduckgo",
+    );
+    assert.equal(suggestionKindForScope({}), "duckduckgo");
+  });
+});
+
+describe("githubRepositoryNames", () => {
+  it("reads repository full names and ignores a bad payload", () => {
+    assert.deepEqual(
+      githubRepositoryNames({
+        items: [{ full_name: "raycast/extensions" }, { full_name: 12 }, {}],
+      }),
+      ["raycast/extensions"],
+    );
+    assert.deepEqual(githubRepositoryNames(null), []);
+  });
+});
 
 describe("loadSiteEngines", () => {
   it("uses the Safari fallback when browser is null", () => {

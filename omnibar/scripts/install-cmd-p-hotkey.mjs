@@ -110,10 +110,14 @@ run(`launchctl bootstrap gui/$(id -u) ${JSON.stringify(PLIST)}`);
 run(`launchctl enable gui/$(id -u)/${LABEL}`);
 run(`launchctl kickstart -k gui/$(id -u)/${LABEL}`);
 
+const quiet = process.argv.includes("--quiet");
+
 console.log(`
 Installed as: ${APP}
+`);
 
-IMPORTANT — re-authorize after packaging as .app:
+if (!quiet) {
+  console.log(`IMPORTANT — re-authorize after packaging as .app:
 1. System Settings → Privacy & Security → Accessibility
    - Find "Omnibar Cmd+P"
    - Toggle it OFF, then ON again (required after every rebuild)
@@ -124,25 +128,25 @@ IMPORTANT — re-authorize after packaging as .app:
    launchctl kickstart -k gui/$(id -u)/com.johann.omnibar.cmd-p
 4. Confirm log shows "hotkey running (Carbon)":
    tail -f ${path.join(SUPPORT, "cmd-p-hotkey.err.log")}
-5. Focus Helium → ⌘P → Omnibar
+5. Focus a browser → ⌘P → Omnibar
 `);
-
-try {
-  execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"', {
-    stdio: "ignore",
-  });
-} catch {
-  // ignore
-}
-try {
-  execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"', {
-    stdio: "ignore",
-  });
-} catch {
-  // ignore
-}
-try {
-  execSync(`open -R ${JSON.stringify(APP)}`, { stdio: "ignore" });
-} catch {
-  // ignore
+  try {
+    execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"', {
+      stdio: "ignore",
+    });
+  } catch {
+    // ignore
+  }
+  try {
+    execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"', {
+      stdio: "ignore",
+    });
+  } catch {
+    // ignore
+  }
+  try {
+    execSync(`open -R ${JSON.stringify(APP)}`, { stdio: "ignore" });
+  } catch {
+    // ignore
+  }
 }

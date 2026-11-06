@@ -1,5 +1,6 @@
 import { homedir } from "os";
 import { join } from "path";
+import commandByBundle from "./browser-commands.json";
 
 export type BrowserEngine = "chromium" | "webkit" | "arc" | "gecko";
 
@@ -152,7 +153,22 @@ export function profileRootFor(browser: BrowserDefinition): string | undefined {
 }
 
 export const EXTENSION_NAME = "omnibar";
-export const EXTENSION_DEEPLINK =
-  "raycast://extensions/johann_goncalves_pereira/omnibar/search";
+export const OMNIBAR_AUTHOR = "johann_goncalves_pereira";
+export const OMNIBAR_FALLBACK_COMMAND = "search";
+
+const commands: Record<string, string> = commandByBundle;
+
+/** Command launched by Cmd+P. Each browser has its own icon. */
+export function omnibarCommandName(bundleId: string | undefined): string {
+  if (!bundleId) return OMNIBAR_FALLBACK_COMMAND;
+  const named = commands[bundleId];
+  return named && named.length > 0 ? named : OMNIBAR_FALLBACK_COMMAND;
+}
+
+export function omnibarDeeplink(bundleId?: string): string {
+  return `raycast://extensions/${OMNIBAR_AUTHOR}/${EXTENSION_NAME}/${omnibarCommandName(bundleId)}`;
+}
+
+export const EXTENSION_DEEPLINK = omnibarDeeplink();
 export const KARABINER_RULE_DESCRIPTION =
   "Cmd+P → Omnibar when browser frontmost";

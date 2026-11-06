@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  filterBookmarks,
   flattenBookmarkTree,
   type ChromiumBookmarkNode,
 } from "./browser-bookmarks";
@@ -65,5 +66,31 @@ describe("flattenBookmarkTree", () => {
     const items = flattenBookmarkTree(root);
     assert.equal(items.length, 1);
     assert.equal(items[0].title, "Docs");
+  });
+});
+
+describe("filterBookmarks", () => {
+  it("keeps only the bang's domain", () => {
+    const items = [
+      {
+        id: "1",
+        title: "Repo",
+        url: "https://github.com/raycast/extensions",
+        domain: "github.com",
+        folderPath: "",
+      },
+      {
+        id: "2",
+        title: "Mail",
+        url: "https://mail.example.com/",
+        domain: "mail.example.com",
+        folderPath: "",
+      },
+    ];
+    const matched = filterBookmarks(items, "", ["github.com"]);
+    assert.deepEqual(
+      matched.map((item) => item.id),
+      ["1"],
+    );
   });
 });

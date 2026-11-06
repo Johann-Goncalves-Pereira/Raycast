@@ -105,6 +105,29 @@ describe("filterHistory", () => {
   it("respects limit", () => {
     assert.equal(filterHistory(items, "", undefined, 1).length, 1);
   });
+
+  it("ranks a frequently opened link above a newer one", () => {
+    const ranked = filterHistory(
+      [
+        {
+          url: "https://new.example/",
+          title: "New",
+          domain: "new.example",
+          lastVisitTime: 900,
+          visitCount: 1,
+        },
+        {
+          url: "https://often.example/",
+          title: "Often",
+          domain: "often.example",
+          lastVisitTime: 100,
+          visitCount: 40,
+        },
+      ],
+      "",
+    );
+    assert.equal(ranked[0]?.url, "https://often.example/");
+  });
 });
 
 describe("getBrowserHistory", () => {

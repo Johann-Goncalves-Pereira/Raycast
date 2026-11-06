@@ -1,3 +1,5 @@
+import type { BrowserEngine } from "./browser-catalog";
+
 export type CommandCategory =
   | "navigation"
   | "organization"
@@ -13,6 +15,10 @@ export type BrowserCommand = {
   shortcut?: string;
   /** When set, open this URL in the frontmost browser instead of AppleScript. */
   openUrl?: string;
+  /** Omitted means every browser engine. */
+  engines?: readonly BrowserEngine[];
+  /** Menu bar item, as [menu, item]. */
+  menuPath?: readonly string[];
 };
 
 export const SUGGESTED_COMMAND_IDS = [
@@ -39,6 +45,7 @@ export const COMMAND_CATALOG: BrowserCommand[] = [
     keywords: ["incognito", "private", "window"],
     category: "navigation",
     shortcut: "⌘⇧N",
+    engines: ["chromium", "arc"],
   },
   {
     id: "reopen-closed-tab",
@@ -88,6 +95,7 @@ export const COMMAND_CATALOG: BrowserCommand[] = [
     category: "navigation",
     shortcut: "⌘⇧J",
     openUrl: "chrome://downloads/",
+    engines: ["chromium", "arc"],
   },
   {
     id: "close-tab",
@@ -235,6 +243,7 @@ export const COMMAND_CATALOG: BrowserCommand[] = [
     category: "other",
     shortcut: "⌘Y",
     openUrl: "chrome://history/",
+    engines: ["chromium", "arc"],
   },
   {
     id: "print",
@@ -271,6 +280,7 @@ export const COMMAND_CATALOG: BrowserCommand[] = [
     category: "settings",
     shortcut: "⌘,",
     openUrl: "chrome://settings/",
+    engines: ["chromium", "arc"],
   },
   {
     id: "manage-extensions",
@@ -278,6 +288,7 @@ export const COMMAND_CATALOG: BrowserCommand[] = [
     keywords: ["extensions", "plugins"],
     category: "settings",
     openUrl: "chrome://extensions/",
+    engines: ["chromium", "arc"],
   },
   {
     id: "add-extension",
@@ -285,6 +296,136 @@ export const COMMAND_CATALOG: BrowserCommand[] = [
     keywords: ["web store", "chrome store"],
     category: "settings",
     openUrl: "https://chromewebstore.google.com/",
+    engines: ["chromium", "arc"],
+  },
+  {
+    id: "task-manager",
+    title: "Task Manager",
+    keywords: ["task", "manager", "process"],
+    category: "other",
+    engines: ["chromium"],
+    menuPath: ["Window", "Task Manager"],
+  },
+  {
+    id: "clear-browsing-data",
+    title: "Clear Browsing Data",
+    keywords: ["clear", "cache", "cookies"],
+    category: "settings",
+    engines: ["chromium"],
+    openUrl: "chrome://settings/clearBrowserData",
+  },
+  {
+    id: "new-folder",
+    title: "New Folder",
+    keywords: ["folder", "create", "new"],
+    category: "organization",
+    engines: ["gecko"],
+    menuPath: ["File", "New Folder"],
+  },
+  {
+    id: "toggle-sidebar",
+    title: "Toggle Sidebar",
+    keywords: ["sidebar"],
+    category: "organization",
+    engines: ["gecko"],
+    menuPath: ["View", "Toggle Sidebar"],
+  },
+  {
+    id: "compact-mode",
+    title: "Compact Mode",
+    keywords: ["compact"],
+    category: "other",
+    engines: ["gecko"],
+    menuPath: ["View", "Compact Mode"],
+  },
+  {
+    id: "new-split",
+    title: "New Split",
+    keywords: ["split", "view"],
+    category: "organization",
+    engines: ["gecko"],
+    menuPath: ["File", "New Split"],
+  },
+  {
+    id: "pin-tab",
+    title: "Pin Tab",
+    keywords: ["pin", "tab"],
+    category: "organization",
+    engines: ["gecko"],
+    menuPath: ["Tab", "Pin Tab"],
+  },
+  {
+    id: "downloads-gecko",
+    title: "Downloads",
+    keywords: ["downloads"],
+    category: "other",
+    engines: ["gecko"],
+    openUrl: "about:downloads",
+  },
+  {
+    id: "view-history-gecko",
+    title: "View History",
+    keywords: ["history"],
+    category: "other",
+    engines: ["gecko"],
+    openUrl: "about:history",
+  },
+  {
+    id: "preferences-gecko",
+    title: "Preferences…",
+    keywords: ["settings", "prefs"],
+    category: "settings",
+    engines: ["gecko"],
+    openUrl: "about:preferences",
+  },
+  {
+    id: "new-private-window",
+    title: "New Private Window",
+    keywords: ["private", "incognito", "window"],
+    category: "navigation",
+    shortcut: "⌘⇧N",
+    engines: ["webkit", "gecko"],
+    menuPath: ["File", "New Private Window"],
+  },
+  {
+    id: "show-all-tabs",
+    title: "Show All Tabs",
+    keywords: ["tabs", "overview"],
+    category: "navigation",
+    engines: ["webkit"],
+    menuPath: ["View", "Show All Tabs"],
+  },
+  {
+    id: "reader",
+    title: "Show Reader",
+    keywords: ["reader"],
+    category: "other",
+    engines: ["webkit"],
+    menuPath: ["View", "Show Reader"],
+  },
+  {
+    id: "downloads-safari",
+    title: "Downloads",
+    keywords: ["downloads"],
+    category: "other",
+    engines: ["webkit"],
+    menuPath: ["View", "Show Downloads"],
+  },
+  {
+    id: "view-history-safari",
+    title: "Show All History",
+    keywords: ["history"],
+    category: "other",
+    engines: ["webkit"],
+    menuPath: ["History", "Show All History"],
+  },
+  {
+    id: "preferences-safari",
+    title: "Settings…",
+    keywords: ["settings", "prefs", "preferences"],
+    category: "settings",
+    engines: ["webkit"],
+    menuPath: ["Safari", "Settings…"],
   },
 ];
 
@@ -318,24 +459,42 @@ function scoreCommand(command: BrowserCommand, query: string): number {
   return 0;
 }
 
+function commandVisible(
+  command: BrowserCommand,
+  engine?: BrowserEngine,
+): boolean {
+  if (!engine || !command.engines || command.engines.length === 0) return true;
+  return command.engines.includes(engine);
+}
+
 /** Empty filter → curated suggestions; otherwise ranked keyword/title matches. */
-export function filterCommands(query: string, limit = 10): BrowserCommand[] {
+export function filterCommands(
+  query: string,
+  engineOrLimit?: BrowserEngine | number,
+  limit = 10,
+): BrowserCommand[] {
+  const engine = typeof engineOrLimit === "string" ? engineOrLimit : undefined;
+  const cap = typeof engineOrLimit === "number" ? engineOrLimit : limit;
+  const visible = COMMAND_CATALOG.filter((command) =>
+    commandVisible(command, engine),
+  );
   const q = query.trim().toLowerCase();
   if (!q) {
-    return SUGGESTED_COMMAND_IDS.map((id) => findCommand(id)).filter(
-      (c): c is BrowserCommand => Boolean(c),
-    );
+    return SUGGESTED_COMMAND_IDS.map((id) =>
+      visible.find((command) => command.id === id),
+    ).filter((command): command is BrowserCommand => Boolean(command));
   }
 
-  return COMMAND_CATALOG.map((command) => ({
-    command,
-    score: scoreCommand(command, q),
-  }))
+  return visible
+    .map((command) => ({
+      command,
+      score: scoreCommand(command, q),
+    }))
     .filter((row) => row.score > 0)
     .sort(
       (a, b) =>
         b.score - a.score || a.command.title.localeCompare(b.command.title),
     )
-    .slice(0, limit)
+    .slice(0, cap)
     .map((row) => row.command);
 }

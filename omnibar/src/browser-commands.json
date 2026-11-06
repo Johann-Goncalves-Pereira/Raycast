@@ -1,0 +1,8 @@
+{
+  "com.google.Chrome": "cmd-chrome",
+  "com.google.Chrome.dev": "cmd-chrome-dev",
+  "com.apple.Safari": "cmd-safari",
+  "net.imput.helium": "cmd-helium",
+  "net.imput.helium.helper": "cmd-helium",
+  "app.zen-browser.zen": "cmd-zen"
+}

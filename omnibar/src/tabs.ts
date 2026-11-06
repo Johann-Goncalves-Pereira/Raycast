@@ -2,7 +2,8 @@ import { Application, open } from "@raycast/api";
 import { runAppleScript } from "@raycast/utils";
 import { BrowserDefinition } from "./browsers";
 import { TTL, cacheKey, readFresh, readStale, writeCache } from "./cache";
-import { Tab, domainFromUrl } from "./classify";
+import { Tab } from "./classify";
+import { parseListedPages } from "./open-pages";
 
 const scriptListTabs = (browserName: string) => `
 tell application "${browserName}"
@@ -24,7 +25,13 @@ tell application "${browserName}"
         on error
           set tabIndex to chromiumTabIndex
         end try
-        set tabInfo to tabName & "\\n" & tabUrl & "\\n" & windowId & "\\n" & tabIndex & "\\n\\n"
+        set isLoading to false
+        try
+          set isLoading to loading of aTab
+        end try
+        set loadedFlag to "true"
+        if isLoading then set loadedFlag to "false"
+        set tabInfo to tabName & "\\n" & tabUrl & "\\n" & windowId & "\\n" & tabIndex & "\\n" & loadedFlag & "\\n\\n"
         set output to output & tabInfo
       end repeat
     end repeat
@@ -36,22 +43,7 @@ end tell
 `;
 
 function parseTabs(raw: string | undefined): Tab[] {
-  if (!raw) return [];
-  return raw
-    .split("\n\n")
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block) => {
-      const [title, url, windowId, tabId] = block.split("\n");
-      return {
-        title: title || url || "Untitled",
-        url: url || "",
-        domain: domainFromUrl(url || ""),
-        windowId: windowId || "0",
-        tabId: tabId || "1",
-      };
-    })
-    .filter((tab) => tab.url.length > 0);
+  return parseListedPages(raw);
 }
 
 /** Synchronous stale seed for Raycast List first paint. */

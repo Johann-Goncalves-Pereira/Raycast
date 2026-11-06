@@ -22,10 +22,46 @@
       "mode": "view"
     },
     {
-      "name": "apply-exclusions",
+      "name": "cmd-chrome",
+      "title": "Google Chrome",
+      "description": "Omnibar for Google Chrome, opened with Cmd+P.",
+      "mode": "view",
+      "icon": "browsers/chrome.png"
+    },
+    {
+      "name": "cmd-chrome-dev",
+      "title": "Google Chrome Dev",
+      "description": "Omnibar for Google Chrome Dev, opened with Cmd+P.",
+      "mode": "view",
+      "icon": "browsers/chrome-dev.png"
+    },
+    {
+      "name": "cmd-safari",
+      "title": "Safari",
+      "description": "Omnibar for Safari, opened with Cmd+P.",
+      "mode": "view",
+      "icon": "browsers/safari.png"
+    },
+    {
+      "name": "cmd-helium",
+      "title": "Helium",
+      "description": "Omnibar for Helium, opened with Cmd+P.",
+      "mode": "view",
+      "icon": "browsers/helium.png"
+    },
+    {
+      "name": "cmd-zen",
+      "title": "Zen",
+      "description": "Omnibar for Zen, opened with Cmd+P.",
+      "mode": "view",
+      "icon": "browsers/zen-mark.png"
+    },
+    {
+      "name": "sync-browser-exclusions",
       "title": "Apply Browser Exclusions",
       "description": "Rewrite the Karabiner Cmd+P allowlist from your excluded-browser preferences.",
-      "mode": "no-view"
+      "mode": "no-view",
+      "disabledByDefault": true
     }
   ],
   "preferences": [
@@ -201,12 +237,14 @@
     "dev": "ray develop",
     "fix-lint": "ray lint --fix",
     "lint": "ray lint",
-    "test": "tsx --test src/*.test.ts",
+    "test": "tsx --test src/*.test.ts scripts/*.test.mjs",
     "apply-karabiner": "node scripts/apply-karabiner.mjs",
     "fix-karabiner": "node scripts/fix-karabiner.mjs",
     "reinstall-karabiner": "node scripts/reinstall-karabiner.mjs",
     "install-cmd-p-hotkey": "node scripts/install-cmd-p-hotkey.mjs",
     "install-ask-bridge": "node scripts/install-ask-bridge.mjs",
+    "install-omnibar": "node scripts/install-omnibar.mjs",
+    "update": "node scripts/install-omnibar.mjs",
     "refresh-icon": "node scripts/refresh-icon.mjs"
   },
   "allowScripts": {

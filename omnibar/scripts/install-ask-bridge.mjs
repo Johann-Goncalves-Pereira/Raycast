@@ -6,6 +6,8 @@ import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const nodeBin = process.execPath;
+const nodeDir = path.dirname(nodeBin);
 const scriptPath = path.join(__dirname, "ask-bridge-server.mjs");
 const support = path.join(os.homedir(), "Library", "Application Support", "omnibar");
 const agents = path.join(os.homedir(), "Library", "LaunchAgents");
@@ -24,10 +26,14 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>node</string>
+    <string>${nodeBin}</string>
     <string>${scriptPath}</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${nodeDir}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

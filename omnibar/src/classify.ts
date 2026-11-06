@@ -4,6 +4,8 @@ export type Tab = {
   domain: string;
   windowId: string;
   tabId: string;
+  /** False while the browser still reports the tab as loading. */
+  loaded?: boolean;
 };
 
 export function domainFromUrl(url: string): string {
