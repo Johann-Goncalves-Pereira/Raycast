@@ -1,0 +1,7 @@
+cognitive-complexity-threshold = 25
+too-many-lines-threshold = 120
+excessive-nesting-threshold = 3
+
+disallowed-methods = [
+	{ path = "std::mem::forget", reason = "RAII: do not leak with mem::forget" },
+]

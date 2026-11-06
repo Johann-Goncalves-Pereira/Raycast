@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Qui</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="titlebar" data-tauri-drag-region>
+    <div class="window-controls">
+      <button id="btn-close" class="control-btn close" title="Close & Stop Qui" aria-label="Close"></button>
+      <button id="btn-minimize" class="control-btn minimize" title="Minimize" aria-label="Minimize"></button>
+      <button id="btn-maximize" class="control-btn maximize" title="Maximize" aria-label="Maximize"></button>
+    </div>
+
+    <div class="titlebar-center" data-tauri-drag-region>
+      <img src="icons/icon.png" class="app-icon" alt="Qui" data-tauri-drag-region />
+      <span class="app-title" data-tauri-drag-region>qui</span>
+      <span id="status-pill" class="status-pill status-starting" data-tauri-drag-region>Starting...</span>
+    </div>
+
+    <div class="titlebar-actions">
+      <button id="btn-zen" class="action-btn" title="Open in Zen Browser (Annonimo Container)">
+        <span class="btn-icon">🌐</span>
+        <span class="btn-label">Zen (Annonimo)</span>
+      </button>
+      <button id="btn-reload" class="action-btn icon-only" title="Reload Interface">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="app-viewport">
+    <div id="loader-view" class="loader-view">
+      <div class="loader-card">
+        <div class="logo-wrapper">
+          <img src="icons/icon.png" class="pulsing-logo" alt="Qui" />
+        </div>
+        <h2 class="loader-title">Qui Dashboard</h2>
+        <p id="loader-status" class="loader-status">Verifying Docker environment...</p>
+        <div class="progress-bar-container">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <div class="steps-list">
+          <div id="step-docker" class="step pending">1. Docker daemon check</div>
+          <div id="step-update" class="step pending">2. Pull latest Qui image</div>
+          <div id="step-container" class="step pending">3. Start Qui container</div>
+          <div id="step-ready" class="step pending">4. Connect to Web UI</div>
+        </div>
+      </div>
+    </div>
+
+    <iframe id="qui-frame" class="qui-frame hidden" src="about:blank" title="Qui Dashboard"></iframe>
+  </main>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

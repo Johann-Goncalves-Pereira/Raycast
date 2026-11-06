@@ -2,5 +2,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+echo "==> Validating humanized-type..."
 "$ROOT/humanized-type/scripts/validate"
+
+echo "==> Validating browser extension..."
 "$ROOT/humanized-type/browser-extension/scripts/validate"
+
+echo "==> Validating Qui Tauri app (Rust fmt & Clippy)..."
+cargo fmt --manifest-path "$ROOT/qui-app/src-tauri/Cargo.toml" -- --check
+cargo clippy --manifest-path "$ROOT/qui-app/src-tauri/Cargo.toml" --all-targets -- -D warnings
+cargo test --manifest-path "$ROOT/qui-app/src-tauri/Cargo.toml"
+
+echo "==> Validating Open Qui Desktop (Tauri wrapper) script..."
+"$ROOT/open-qui-desktop/test.sh"
+
+echo "==> Validating Open Qui script..."
+"$ROOT/open-qui/test.sh"
+
+echo "==> Validating Open I2P Zen profile script..."
+"$ROOT/open-i2p-zen-profile/test.sh"
+
+echo "==> All quality stack validations passed!"

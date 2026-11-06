@@ -3,3 +3,5 @@
 browser-spotlight/node_modules/
 humanized-type/browser-extension/node_modules/
 browser-spotlight/.raycast/
+qui-app/src-tauri/target/
+qui-app/node_modules/
