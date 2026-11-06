@@ -6,17 +6,14 @@ const invoke = window.__TAURI__?.core?.invoke || (async (cmd) => {
   return null;
 });
 
-const statusPill = document.getElementById('status-pill');
 const loaderStatus = document.getElementById('loader-status');
 const progressBar = document.getElementById('progress-bar');
 const loaderView = document.getElementById('loader-view');
-const quiFrame = document.getElementById('qui-frame');
 
 const btnClose = document.getElementById('btn-close');
 const btnMinimize = document.getElementById('btn-minimize');
 const btnMaximize = document.getElementById('btn-maximize');
-const btnZen = document.getElementById('btn-zen');
-const btnReload = document.getElementById('btn-reload');
+const dragStrip = document.getElementById('drag-strip');
 
 const stepDocker = document.getElementById('step-docker');
 const stepUpdate = document.getElementById('step-update');
@@ -24,14 +21,13 @@ const stepContainer = document.getElementById('step-container');
 const stepReady = document.getElementById('step-ready');
 
 function setStep(stepEl, state) {
+  if (!stepEl) return;
   stepEl.classList.remove('pending', 'active', 'done');
   stepEl.classList.add(state);
 }
 
 // Window control events
 btnClose?.addEventListener('click', async () => {
-  statusPill.textContent = 'Stopping...';
-  statusPill.className = 'status-pill status-starting';
   try {
     await invoke('close_app');
   } catch (err) {
@@ -55,71 +51,89 @@ btnMaximize?.addEventListener('click', async () => {
   }
 });
 
-btnZen?.addEventListener('click', async () => {
+// Window dragging on top strip or with Cmd key held
+dragStrip?.addEventListener('mousedown', async () => {
   try {
-    await invoke('open_in_zen_container');
+    await invoke('start_drag');
   } catch (err) {
-    console.error('Failed to open in Zen:', err);
+    console.error('Failed to start drag:', err);
   }
 });
 
-btnReload?.addEventListener('click', () => {
-  if (quiFrame && quiFrame.src && quiFrame.src !== 'about:blank') {
-    quiFrame.src = quiFrame.src;
+window.addEventListener('keydown', async (e) => {
+  // Cmd+W or Cmd+Q: cleanly quit and stop Qui
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'w' || e.key === 'q')) {
+    e.preventDefault();
+    try {
+      await invoke('close_app');
+    } catch (err) {
+      console.error('Close app error:', err);
+    }
+  }
+
+  // Cmd+O or Cmd+Shift+Z: Open directly in Zen Annonimo container
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || (e.shiftKey && e.key === 'Z'))) {
+    e.preventDefault();
+    try {
+      await invoke('open_in_zen_container');
+    } catch (err) {
+      console.error('Open in Zen error:', err);
+    }
   }
 });
 
 async function initializeQui() {
   try {
     setStep(stepDocker, 'active');
-    loaderStatus.textContent = 'Verifying Docker and Colima...';
-    progressBar.style.width = '25%';
+    if (loaderStatus) loaderStatus.textContent = 'Verifying Docker and Colima...';
+    if (progressBar) progressBar.style.width = '25%';
 
-    // Start background process via Rust Tauri command
+    // Step 1: Docker daemon check
     setStep(stepDocker, 'done');
     setStep(stepUpdate, 'active');
-    loaderStatus.textContent = 'Checking for Qui updates from ghcr.io...';
-    progressBar.style.width = '50%';
+    if (loaderStatus) loaderStatus.textContent = 'Checking for Qui updates from ghcr.io...';
+    if (progressBar) progressBar.style.width = '50%';
 
+    // Step 2-4: Pull latest image, start container, wait for port
     const res = await invoke('start_and_update_qui');
 
     setStep(stepUpdate, 'done');
     setStep(stepContainer, 'done');
     setStep(stepReady, 'active');
-    loaderStatus.textContent = 'Connecting to Qui Web Interface...';
-    progressBar.style.width = '85%';
+    if (loaderStatus) loaderStatus.textContent = 'Connecting to WebKit Web UI...';
+    if (progressBar) progressBar.style.width = '85%';
 
     if (res && res.success) {
       const port = res.port || 7476;
       const targetUrl = `http://localhost:${port}/`;
 
       setStep(stepReady, 'done');
-      progressBar.style.width = '100%';
-      loaderStatus.textContent = 'Ready!';
-      statusPill.textContent = 'Connected • :7476';
-      statusPill.className = 'status-pill status-running';
+      if (progressBar) progressBar.style.width = '100%';
+      if (loaderStatus) loaderStatus.textContent = 'Ready!';
 
+      // Launch Zen in Annonimo container alongside the WebKit app
       setTimeout(async () => {
         try {
           await invoke('open_in_zen_container');
-          statusPill.textContent = 'Zen • Annonimo • :7476';
         } catch (zenErr) {
           console.warn('Could not open Zen Annonimo container:', zenErr);
         }
 
-        quiFrame.src = targetUrl;
-        quiFrame.classList.remove('hidden');
-        loaderView.style.display = 'none';
-      }, 400);
+        // Navigate top-level window directly to Qui WebKit UI
+        try {
+          await invoke('navigate_to_qui');
+        } catch (navErr) {
+          console.warn('Rust navigate error, using location.replace:', navErr);
+          window.location.replace(targetUrl);
+        }
+      }, 350);
     } else {
       throw new Error(res?.message || 'Failed to start Qui');
     }
   } catch (error) {
     console.error('Initialization error:', error);
-    loaderStatus.textContent = `Error: ${error}`;
-    statusPill.textContent = 'Error';
-    statusPill.className = 'status-pill status-error';
-    progressBar.style.backgroundColor = '#ef4444';
+    if (loaderStatus) loaderStatus.textContent = `Error: ${error}`;
+    if (progressBar) progressBar.style.backgroundColor = '#ef4444';
   }
 }
 
