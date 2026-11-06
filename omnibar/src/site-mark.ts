@@ -1,3 +1,5 @@
+import type { Image } from "@raycast/api";
+
 /** Brand colors Raycast can paint on a bang tag. The list window has no background API. */
 const BRAND_COLORS: Record<string, string> = {
   youtube: "#FF0000",
@@ -9,6 +11,13 @@ const BRAND_COLORS: Record<string, string> = {
   reddit: "#FF4500",
   amazon: "#FF9900",
   yahoo: "#6001D2",
+};
+
+export const SQUIRCLE_MASK: Image.Mask = "roundedRectangle" as Image.Mask;
+
+export type SiteIcon = {
+  source: string;
+  mask: Image.Mask;
 };
 
 function hostKey(domain: string): string {
@@ -45,14 +54,14 @@ export function hueFromKey(key: string): string {
 }
 
 /** Favicon shown on the right of the history clock for one history link. */
-export function historyLinkLogo(domain: string): { source: string } | null {
+export function historyLinkLogo(domain: string): SiteIcon | null {
   return siteIcon([domain]);
 }
 
 export function siteIcon(
   domains: readonly string[],
-): { source: string } | null {
+): SiteIcon | null {
   const domain = domains.find((item) => item.trim().length > 0);
   if (!domain) return null;
-  return { source: faviconUrl(domain) };
+  return { source: faviconUrl(domain), mask: SQUIRCLE_MASK };
 }

@@ -5,6 +5,7 @@ import {
   Clipboard,
   Color,
   Icon,
+  Image,
   Keyboard,
   List,
   Toast,
@@ -980,7 +981,11 @@ export default function Command() {
   function websiteIcon(domains: readonly string[] | undefined) {
     const icon = domains ? siteIcon(domains) : null;
     if (!icon) return rowIcon;
-    return { source: icon.source, fallback: Icon.Globe };
+    return {
+      source: icon.source,
+      mask: icon.mask ?? Image.Mask.RoundedRectangle,
+      fallback: Icon.Globe,
+    };
   }
 
   async function closeOmnibarFully(reason: CloseReason) {
