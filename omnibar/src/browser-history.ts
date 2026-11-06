@@ -142,7 +142,7 @@ function readChromiumHistoryRows(historyPath: string): HistoryRow[] {
            AND url NOT LIKE 'edge://%'
            AND url NOT LIKE 'brave://%'
            AND url NOT LIKE 'about:%'
-         ORDER BY last_visit_time DESC
+         ORDER BY visit_count DESC, last_visit_time DESC
          LIMIT 200`,
       ),
     ) ?? []
@@ -164,7 +164,7 @@ export function readGeckoHistoryRows(placesPath: string): HistoryRow[] {
            AND url NOT LIKE 'about:%'
            AND url NOT LIKE 'place:%'
            AND url NOT LIKE 'moz-extension://%'
-         ORDER BY last_visit_date DESC
+         ORDER BY visit_count DESC, last_visit_date DESC
          LIMIT 200`,
       ),
     ) ?? []
@@ -192,7 +192,7 @@ export function readSafariHistoryRows(historyDbPath: string): HistoryRow[] {
          WHERE history_items.url NOT LIKE 'about:%'
            AND history_items.url NOT LIKE 'file:%'
          GROUP BY history_items.id
-         ORDER BY last_visit_time DESC
+         ORDER BY visit_count DESC, last_visit_time DESC
          LIMIT 200`,
       );
       return raw.map((row) => ({
@@ -258,9 +258,20 @@ function matchesDomainFilter(item: HistoryItem, domains: string[]): boolean {
   });
 }
 
+/** Most-opened links first. A newer visit breaks a tie. */
+export function rankHistory(items: readonly HistoryItem[]): HistoryItem[] {
+  return [...items].sort((left, right) => {
+    if (right.visitCount !== left.visitCount) {
+      return right.visitCount - left.visitCount;
+    }
+    return right.lastVisitTime - left.lastVisitTime;
+  });
+}
+
 /**
  * Filter history by optional domain scope and a simple query (title/url/domain).
  * Callers that use Fuse can pass query="" and filter themselves.
+ * The result is ranked by how often each link was opened.
  */
 export function filterHistory(
   items: HistoryItem[],
@@ -284,5 +295,5 @@ export function filterHistory(
     );
   }
 
-  return filtered.slice(0, limit);
+  return rankHistory(filtered).slice(0, limit);
 }
