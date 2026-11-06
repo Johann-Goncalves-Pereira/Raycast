@@ -65,4 +65,58 @@ describe("filterCommands", () => {
     const hits = filterCommands("google doc");
     assert.ok(hits.some((c) => c.id === "new-google-doc"));
   });
+
+  it("ranks New Folder ahead of New Window for Zen", () => {
+    const hits = filterCommands("new fold", "gecko");
+    assert.equal(hits[0]?.id, "new-folder");
+    assert.ok(hits.some((command) => command.id === "new-window"));
+  });
+
+  it("hides Zen folder commands on WebKit and Chromium", () => {
+    assert.equal(
+      filterCommands("new fold", "webkit").some(
+        (command) => command.id === "new-folder",
+      ),
+      false,
+    );
+    assert.equal(
+      filterCommands("new fold", "chromium").some(
+        (command) => command.id === "new-folder",
+      ),
+      false,
+    );
+  });
+
+  it("keeps chrome:// pages off Safari and the web store off Zen", () => {
+    const safari = [
+      ...filterCommands("", "webkit"),
+      ...filterCommands("history", "webkit"),
+      ...filterCommands("settings", "webkit"),
+      ...filterCommands("downloads", "webkit"),
+    ];
+    assert.ok(safari.every((command) => !command.openUrl?.startsWith("chrome:")));
+    assert.equal(
+      filterCommands("extension", "gecko").some(
+        (command) => command.id === "add-extension",
+      ),
+      false,
+    );
+  });
+
+  it("keeps Chromium incognito, downloads, extensions, and task manager", () => {
+    const ids = new Set([
+      ...filterCommands("incognito", "chromium").map((command) => command.id),
+      ...filterCommands("download", "chromium").map((command) => command.id),
+      ...filterCommands("extensions", "chromium").map((command) => command.id),
+      ...filterCommands("task manager", "chromium").map((command) => command.id),
+    ]);
+    for (const id of [
+      "new-incognito",
+      "downloads",
+      "manage-extensions",
+      "task-manager",
+    ]) {
+      assert.ok(ids.has(id), `missing ${id}`);
+    }
+  });
 });
