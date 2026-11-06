@@ -1,21 +1,31 @@
 # Qui Desktop App
 
-A frameless macOS desktop wrapper for [qui](https://getqui.com) built with Tauri v2 and Rust.
+A frameless, squircle macOS desktop wrapper for [qui](https://getqui.com) built on Apple WebKit (`WKWebView`), Tauri v2, and Rust.
 
 ## Features
 
-- **Frameless Window**: Custom macOS window with transparent backdrop, rounded corners, draggable titlebar (`data-tauri-drag-region`), and native window controls.
+- **No Top Bar (Zero Chrome)**: Clean frameless design with zero titlebar or header chrome taking up vertical space. The WebKit viewport fills 100% of the squircle window.
+- **Squircle Rounded Borders**: Continuous macOS squircle corner curvature (`22px` radius) with anti-aliased subpixel clipping and subtle glass edge lighting.
+- **Translucent Background with Backdrop Blur**:
+  - Native macOS acrylic vibrancy via AppKit `NSVisualEffectView` (`FullScreenUI`).
+  - CSS glassmorphism layer with `-webkit-backdrop-filter: blur(40px) saturate(180%)`.
+- **WebKit Engine Performance**:
+  - Runs natively on Apple WebKit (`WKWebView`) without Electron or Chromium overhead.
+  - Hardware accelerated graphics and minimal RAM footprint.
+- **Invisible Drag Region**:
+  - Top 26px drag strip (`-webkit-app-region: drag`) enables effortless window movement without any visible bar.
+  - Discreet, floating traffic lights softly fade in on hover in the top-left corner.
+  - Keyboard shortcuts: `Cmd+W` / `Cmd+Q` (clean quit), `Cmd+R` (reload), `Cmd+O` / `Cmd+Shift+Z` (open in Zen Annonimo).
 - **Docker Auto-Management**:
-  - Automatically verifies Colima and Docker daemon on launch.
-  - Pulls the latest image updates from `ghcr.io/autobrr/qui:latest` on launch.
+  - Verifies Colima and Docker daemon on launch.
+  - Automatically pulls the latest image updates from `ghcr.io/autobrr/qui:latest` on launch.
   - Starts or recreates the container and polls `http://localhost:7476/` until ready.
   - **Clean Shutdown**: Automatically stops the Qui container when the app window is closed or the app quits.
-- **Zen Browser (Annonimo Container) Bridge**: On startup, opens Qui in Zen using the `Annonimo` container; titlebar button focuses it again.
-- **Status & Controls**: Real-time connection badge, reload button, minimize, maximize, and close controls.
+- **Zen Browser (Annonimo Container) Bridge**: Automatically opens the running Qui instance in Zen Browser under the `Annonimo` Multi-Account Container once ready.
 
-## Building
+## Building & Installing
 
-One-shot install to `~/Applications/Qui.app`:
+One-shot build and install to `~/Applications/Qui.app`:
 
 ```bash
 ./qui-app/scripts/build-and-install-macos.sh
@@ -42,9 +52,9 @@ and installed to:
 - [`../docs/README.md`](../docs/README.md)
 - [`../open-qui-desktop/README.md`](../open-qui-desktop/README.md)
 
-## Raycast
+## Launching
 
-Use **Open Qui Desktop** to launch this wrapper, or run:
+Use **Open Qui Desktop** in Raycast, or run:
 
 ```bash
 open ~/Applications/Qui.app
