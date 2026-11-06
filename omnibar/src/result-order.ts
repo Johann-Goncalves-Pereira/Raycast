@@ -1,13 +1,17 @@
 import { bangItemId, historyItemId } from "./bangs";
+import { navigableHttpUrl } from "./submit-target";
 
 export const NEW_SEARCH_ITEM_ID = "query-search";
 export const SCOPED_SEARCH_ITEM_ID = "scoped-search";
 export const MRU_TAB_LIMIT = 5;
+export const QUICK_PICK_LIMIT = 2;
 
 export type ResultSection =
   | "actions"
   | "answers"
   | "search"
+  | "space"
+  | "quick"
   | "history"
   | "bookmarks"
   | "commands"
@@ -55,23 +59,105 @@ export function parseQueryScope(query: string): {
 }
 
 /**
- * Empty: MRU tabs → commands → recent → bookmarks.
+ * Empty: MRU tabs → commands → this Space → quick picks → recent → bookmarks.
  * `/`: commands only.
  * `@`: bang catalog.
- * Typing: search row → history → tabs → answers → bookmarks → commands.
+ * Typing: search → this Space → quick picks → history → tabs → answers → bookmarks → commands.
+ * Cmd+Shift: only pages open on the current Space.
  */
-export function sectionsForQuery(query: string): ResultSection[] {
+export function sectionsForQuery(
+  query: string,
+  options?: { spaceOnly?: boolean },
+): ResultSection[] {
+  if (options?.spaceOnly) return ["space"];
   if (isActionScopeQuery(query)) return ["commands"];
   if (isBangListingQuery(query)) return ["bangs"];
   if (query.trim().length === 0) {
-    return ["actions", "commands", "history", "bookmarks"];
+    return ["actions", "commands", "space", "quick", "history", "bookmarks"];
   }
-  return ["search", "history", "actions", "answers", "bookmarks", "commands"];
+  return [
+    "search",
+    "space",
+    "quick",
+    "history",
+    "actions",
+    "answers",
+    "bookmarks",
+    "commands",
+  ];
+}
+
+/** The preview above the full history and suggestion lists. */
+export function quickPicks<T>(
+  items: readonly T[],
+  limit = QUICK_PICK_LIMIT,
+): T[] {
+  return items.slice(0, limit);
+}
+
+/** Rows that stay in the full list after Quick has taken its preview. */
+export function listAfterQuick<T>(
+  items: readonly T[],
+  limit = QUICK_PICK_LIMIT,
+): T[] {
+  return items.slice(limit);
+}
+
+export function siteHost(domain: string): string {
+  return domain.trim().replace(/^www\./i, "").toLowerCase();
+}
+
+/** One history row per site. `www.youtube.com` and `youtube.com` are the same site. */
+export function uniqueBySite<T extends { domain: string; url?: string }>(
+  items: readonly T[],
+): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const item of items) {
+    const host = siteHost(item.domain);
+    const key = host || item.url || "";
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
+export function uniqueLabels(items: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const item of items) {
+    const label = item.trim();
+    const key = label.toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(label);
+  }
+  return unique;
 }
 
 /** Cap empty-state open tabs (Arc shows ~5 MRU). */
 export function mruTabs<T>(tabs: readonly T[], limit = MRU_TAB_LIMIT): T[] {
   return tabs.slice(0, limit);
+}
+
+/**
+ * Arrow keys must stick. The pin is only the default row for a new query.
+ * A different reported row replaces it, so the highlight cannot snap back.
+ */
+export function selectionAfterReport(input: {
+  pinnedId: string | undefined;
+  reportedId: string | undefined;
+}): { selectedId: string | undefined; pinnedId: string | undefined } {
+  return { selectedId: input.reportedId, pinnedId: undefined };
+}
+
+/** History and suggestion refreshes keep the current row. Typing or a new bang does not. */
+export function shouldResetSelection(input: {
+  previousQueryKey: string | null;
+  nextQueryKey: string;
+}): boolean {
+  return input.previousQueryKey !== input.nextQueryKey;
 }
 
 /**
@@ -101,6 +187,8 @@ export function selectionAfterType(input: {
     const bangId = input.bangIds?.[0];
     return bangId ? bangItemId(bangId) : undefined;
   }
+
+  if (navigableHttpUrl(input.query)) return NEW_SEARCH_ITEM_ID;
 
   const tab = input.matchingTabs?.[0];
   if (tab) return tabItemId(tab);

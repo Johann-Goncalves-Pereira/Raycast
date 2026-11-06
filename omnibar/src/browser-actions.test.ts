@@ -121,6 +121,34 @@ describe("createBrowserActions", () => {
     );
   });
 
+  it("clicks Zen's File menu for New Folder", async () => {
+    const deps = mockDeps();
+    const run = createBrowserActions(deps);
+    const result = await run("new-folder", {
+      browserName: "Zen",
+      engine: "gecko",
+    });
+    assert.equal(result.ok, true);
+    assert.ok(
+      deps.scripts.some(
+        (script) =>
+          script.includes("New Folder") &&
+          script.includes('menu "File"') &&
+          script.includes("Zen"),
+      ),
+    );
+  });
+
+  it("opens Zen preferences on about:preferences", async () => {
+    const deps = mockDeps();
+    const run = createBrowserActions(deps);
+    await run("preferences-gecko", {
+      browserName: "Zen",
+      engine: "gecko",
+    });
+    assert.deepEqual(deps.opened, ["about:preferences"]);
+  });
+
   it("returns an error for unknown commands", async () => {
     const deps = mockDeps();
     const run = createBrowserActions(deps);

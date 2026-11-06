@@ -61,7 +61,8 @@ export type CacheKind =
   | "bookmarks"
   | "engines"
   | "extensions"
-  | "suggestions";
+  | "suggestions"
+  | "default-search";
 
 export function cacheKey(
   kind: CacheKind,

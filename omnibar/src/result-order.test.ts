@@ -11,8 +11,14 @@ import {
   isActionScopeQuery,
   mruTabs,
   parseQueryScope,
+  listAfterQuick,
+  quickPicks,
   sectionsForQuery,
+  uniqueBySite,
+  uniqueLabels,
+  selectionAfterReport,
   selectionAfterType,
+  shouldResetSelection,
   tabItemId,
   tabJumpTarget,
 } from "./result-order";
@@ -49,24 +55,38 @@ describe("parseQueryScope / isActionScopeQuery", () => {
 });
 
 describe("sectionsForQuery", () => {
-  it("puts search then history ahead of tabs while typing", () => {
-    assert.deepEqual(sectionsForQuery("raycast"), [
+  it("puts this Space and a two-item quick section above history while typing", () => {
+    const sections = sectionsForQuery("raycast");
+    assert.deepEqual(sections, [
       "search",
+      "space",
+      "quick",
       "history",
       "actions",
       "answers",
       "bookmarks",
       "commands",
     ]);
+    assert.ok(sections.indexOf("space") < sections.indexOf("history"));
+    assert.ok(sections.indexOf("quick") < sections.indexOf("history"));
   });
 
-  it("shows MRU tabs, commands, history, bookmarks when empty", () => {
+  it("shows this Space and quick picks above history when empty", () => {
     assert.deepEqual(sectionsForQuery("   "), [
       "actions",
       "commands",
+      "space",
+      "quick",
       "history",
       "bookmarks",
     ]);
+  });
+
+  it("shows only open pages on this Space while Cmd+Shift is held", () => {
+    assert.deepEqual(sectionsForQuery("raycast", { spaceOnly: true }), [
+      "space",
+    ]);
+    assert.deepEqual(sectionsForQuery("/", { spaceOnly: true }), ["space"]);
   });
 
   it("scopes exclusively to commands for / queries", () => {
@@ -76,6 +96,49 @@ describe("sectionsForQuery", () => {
 
   it("scopes to bangs for @ alone", () => {
     assert.deepEqual(sectionsForQuery("@"), ["bangs"]);
+  });
+});
+
+describe("quickPicks", () => {
+  it("keeps two suggestions and two history rows for the preview", () => {
+    assert.deepEqual(quickPicks(["a", "b", "c", "d"]), ["a", "b"]);
+    assert.deepEqual(quickPicks(["only"]), ["only"]);
+  });
+});
+
+describe("uniqueBySite", () => {
+  it("shows a site once and leaves the rest for the list under Quick", () => {
+    const items = [
+      { domain: "youtube.com", url: "https://youtube.com/watch?v=1" },
+      { domain: "www.youtube.com", url: "https://www.youtube.com/feed" },
+      { domain: "github.com", url: "https://github.com/raycast" },
+      { domain: "mail.google.com", url: "https://mail.google.com" },
+    ];
+    const unique = uniqueBySite(items);
+    assert.deepEqual(
+      unique.map((item) => item.url),
+      [
+        "https://youtube.com/watch?v=1",
+        "https://github.com/raycast",
+        "https://mail.google.com",
+      ],
+    );
+    assert.deepEqual(
+      quickPicks(unique).map((item) => item.domain),
+      ["youtube.com", "github.com"],
+    );
+    assert.deepEqual(
+      listAfterQuick(unique).map((item) => item.domain),
+      ["mail.google.com"],
+    );
+  });
+});
+
+describe("uniqueLabels", () => {
+  it("does not repeat a suggestion that Quick already shows", () => {
+    const labels = uniqueLabels(["YouTube", "youtube", "youtube entrar"]);
+    assert.deepEqual(quickPicks(labels), ["YouTube", "youtube entrar"]);
+    assert.deepEqual(listAfterQuick(labels), []);
   });
 });
 
@@ -153,6 +216,18 @@ describe("selectionAfterType", () => {
     );
   });
 
+  it("selects the search row when the query is an http URL", () => {
+    assert.equal(
+      selectionAfterType({
+        query: "https://www.linkedin.com/",
+        scoped: false,
+        matchingTabs: [tab],
+        historyUrls: ["https://www.linkedin.com/feed/"],
+      }),
+      NEW_SEARCH_ITEM_ID,
+    );
+  });
+
   it("selects the first bang under @ listing", () => {
     assert.equal(
       selectionAfterType({
@@ -161,6 +236,47 @@ describe("selectionAfterType", () => {
         bangIds: ["youtube"],
       }),
       bangItemId("youtube"),
+    );
+  });
+});
+
+describe("selectionAfterReport", () => {
+  it("keeps the history or suggestion row instead of snapping to the pin", () => {
+    assert.deepEqual(
+      selectionAfterReport({
+        pinnedId: "scoped-search",
+        reportedId: "history-https://github.com/raycast",
+      }),
+      {
+        selectedId: "history-https://github.com/raycast",
+        pinnedId: undefined,
+      },
+    );
+  });
+});
+
+describe("shouldResetSelection", () => {
+  it("leaves the row alone when the same query's results refresh", () => {
+    assert.equal(
+      shouldResetSelection({
+        previousQueryKey: "github|test",
+        nextQueryKey: "github|test",
+      }),
+      false,
+    );
+  });
+
+  it("resets when the query or bang changes", () => {
+    assert.equal(
+      shouldResetSelection({ previousQueryKey: null, nextQueryKey: "|test" }),
+      true,
+    );
+    assert.equal(
+      shouldResetSelection({
+        previousQueryKey: "|test",
+        nextQueryKey: "github|test",
+      }),
+      true,
     );
   });
 });

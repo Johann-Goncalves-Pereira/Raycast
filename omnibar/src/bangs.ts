@@ -38,8 +38,7 @@ export const FALLBACK_BANGS: Bang[] = [
     name: "YouTube",
     domains: ["youtube.com", "youtu.be"],
     kind: "site",
-    urlTemplate:
-      "https://www.youtube.com/results?search_query={searchTerms}",
+    urlTemplate: "https://www.youtube.com/results?search_query={searchTerms}",
   },
   {
     id: "github",
@@ -196,6 +195,23 @@ export function rankBangs(
     if (diff !== 0) return diff;
     return a.name.localeCompare(b.name);
   });
+}
+
+/**
+ * Tab on a single token completes to that bang.
+ * `You` → `@YouTube`. Multi-word queries and `/` commands stay as typed.
+ */
+export function bangForTab(
+  query: string,
+  bangs: readonly Bang[],
+  usage: BangUsageMap = {},
+  now: number = Date.now(),
+): Bang | undefined {
+  const token = query.trim();
+  if (!token || /\s/.test(token) || token.startsWith("/") || token === "@") {
+    return undefined;
+  }
+  return resolveBangPrefix(token, [...bangs], usage, now);
 }
 
 /** Prefix match after optional `@`, frequency-ranked. */

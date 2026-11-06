@@ -34,6 +34,23 @@ function webkitFrontTab(body: string): string {
   return `tell front window\ntell current tab\n${body}\nend tell\nend tell`;
 }
 
+export function menuClickScript(
+  browserName: string,
+  menuPath: readonly string[],
+): string {
+  const menu = menuPath[0] ?? "";
+  const item = menuPath[menuPath.length - 1] ?? "";
+  return `
+tell application "${browserName}" to activate
+delay 0.05
+tell application "System Events"
+  tell process "${browserName}"
+    click menu item "${item}" of menu "${menu}" of menu bar item "${menu}" of menu bar 1
+  end tell
+end tell
+`;
+}
+
 async function keychord(
   deps: ActionDeps,
   browserName: string,
@@ -62,6 +79,11 @@ export function createBrowserActions(deps: ActionDeps) {
     try {
       if (command.openUrl) {
         await deps.openUrl(command.openUrl);
+        return { ok: true };
+      }
+
+      if (command.menuPath && command.menuPath.length >= 2) {
+        await deps.keystroke(menuClickScript(ctx.browserName, command.menuPath));
         return { ok: true };
       }
 
