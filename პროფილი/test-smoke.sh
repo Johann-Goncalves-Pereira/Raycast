@@ -21,7 +21,7 @@ xcrun swiftc -typecheck \
   || fail "swiftc -typecheck failed"
 pass "swiftc -typecheck"
 
-# 2) Critical sleep/eject contract symbols present
+# 2) Critical sleep/eject + watchdog contract symbols present
 for needle in \
   'DesktopNotification' \
   'PowerManagement.acquireSleepAssertion' \
@@ -31,13 +31,39 @@ for needle in \
   'auditVaultAfterWake' \
   'DiskImage.detach(at: mountPoint, urgent: true)' \
   'terminateProcessesUsingSecureProfile(urgent:' \
-  'Vault already unmounted'
+  'Vault already unmounted' \
+  '--watchdog' \
+  '--orphan-guard' \
+  '--secure-orphan' \
+  'VaultWatchdog.handoff' \
+  'VaultSessionState' \
+  'VaultLaunchAgent' \
+  'startSessionWatchdog' \
+  'ensureOrphanGuardInstalled' \
+  'bootoutSessionWatchdog' \
+  'shouldSecureOrphan' \
+  'secureOrphanVault' \
+  'handoffToWatchdog' \
+  'com.johann.zen.secure-vault-watchdog' \
+  'com.johann.zen.secure-vault-orphan-guard' \
+  'secure-vault-session.json'
 do
-  rg -q -F "$needle" "$SCRIPT" || fail "missing required symbol/path: $needle"
+  rg -q -F -- "$needle" "$SCRIPT" || fail "missing required symbol/path: $needle"
 done
-pass "sleep/eject contract symbols"
+pass "sleep/eject + watchdog contract symbols"
 
-# 3) No force-unwrap / force-try / force-cast in production script
+# 3) Repo-managed LaunchAgent templates exist
+[[ -f "$ROOT/com.johann.zen.secure-vault-watchdog.plist" ]] \
+  || fail "missing session watchdog plist template"
+[[ -f "$ROOT/com.johann.zen.secure-vault-orphan-guard.plist" ]] \
+  || fail "missing orphan-guard plist template"
+rg -q 'com.johann.zen.secure-vault-watchdog' "$ROOT/com.johann.zen.secure-vault-watchdog.plist" \
+  || fail "watchdog plist label mismatch"
+rg -q 'KeepAlive' "$ROOT/com.johann.zen.secure-vault-orphan-guard.plist" \
+  || fail "orphan-guard plist missing KeepAlive"
+pass "LaunchAgent plist templates"
+
+# 4) No force-unwrap / force-try / force-cast in production script
 if rg -n 'try!|as!' "$SCRIPT"; then
   fail "force try/cast forbidden"
 fi
