@@ -1,15 +1,53 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { join } from "path";
+
+const HINT_MAX_AGE_MS = 15_000;
 
 export type LastBrowserHint = {
   bundleId: string;
   name?: string;
   /** Unix ms when the Cmd+P helper (or Omnibar) recorded this. */
   recordedAt: number;
+  /** Process focused when Cmd+P fired. Two Zens share one bundle id. */
+  pid?: number;
 };
 
-const HINT_MAX_AGE_MS = 15_000;
+export function positivePid(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+export function parseLastBrowserHint(
+  value: unknown,
+  now: number = Date.now(),
+  maxAgeMs: number = HINT_MAX_AGE_MS,
+): LastBrowserHint | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const parsed = value as {
+    bundleId?: unknown;
+    name?: unknown;
+    recordedAt?: unknown;
+    pid?: unknown;
+  };
+  if (typeof parsed.bundleId !== "string" || parsed.bundleId.length === 0) {
+    return undefined;
+  }
+  if (typeof parsed.recordedAt !== "number") return undefined;
+  if (now - parsed.recordedAt > maxAgeMs) return undefined;
+  const hint: LastBrowserHint = {
+    bundleId: parsed.bundleId,
+    recordedAt: parsed.recordedAt,
+  };
+  if (typeof parsed.name === "string" && parsed.name.length > 0) {
+    hint.name = parsed.name;
+  }
+  const pid = positivePid(parsed.pid);
+  if (pid !== undefined) hint.pid = pid;
+  return hint;
+}
 
 export function omnibarSupportDir(): string {
   return join(homedir(), "Library", "Application Support", "omnibar");
@@ -84,12 +122,11 @@ export function readLastBrowserHint(
   const path = lastBrowserHintPath();
   if (!existsSync(path)) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as LastBrowserHint;
-    if (!parsed?.bundleId || typeof parsed.recordedAt !== "number") {
-      return undefined;
-    }
-    if (now - parsed.recordedAt > maxAgeMs) return undefined;
-    return parsed;
+    return parseLastBrowserHint(
+      JSON.parse(readFileSync(path, "utf8")),
+      now,
+      maxAgeMs,
+    );
   } catch {
     return undefined;
   }

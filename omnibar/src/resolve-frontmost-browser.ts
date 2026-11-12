@@ -22,6 +22,8 @@ export type OmnibarBrowserContext = {
   frontmost: Application;
   browser: BrowserDefinition;
   allowed: true;
+  /** Zen process that was focused when Cmd+P fired. */
+  focusedPid?: number;
 };
 
 export type OmnibarDeniedContext = {
@@ -109,11 +111,13 @@ export async function resolveOmnibarContext(
   });
   if (!browser) return { frontmost, browser: null, allowed: false };
 
+  const focusedPid = hint?.bundleId === browser.bundleId ? hint.pid : undefined;
   if (browser.bundleId === frontBundle) {
     return {
       frontmost: await withInstalledIcon(frontmost),
       browser,
       allowed: true,
+      focusedPid,
     };
   }
 
@@ -124,5 +128,6 @@ export async function resolveOmnibarContext(
     ),
     browser,
     allowed: true,
+    focusedPid,
   };
 }

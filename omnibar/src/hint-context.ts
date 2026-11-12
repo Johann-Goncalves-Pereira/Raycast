@@ -1,5 +1,5 @@
 import type { BrowserDefinition } from "./browser-catalog";
-import type { LastBrowserHint } from "./last-browser";
+import { positivePid, type LastBrowserHint } from "./last-browser";
 import {
   browserForOmnibarOpen,
   type ExclusionPrefs,
@@ -8,6 +8,8 @@ import {
 export type HintedContext = {
   allowed: true;
   browser: BrowserDefinition;
+  /** Zen process that was focused when Cmd+P fired. */
+  focusedPid?: number;
   frontmost: {
     name: string;
     bundleId: string;
@@ -35,6 +37,7 @@ export function contextFromHint(
   return {
     allowed: true,
     browser,
+    focusedPid: positivePid(hint.pid),
     frontmost: {
       name: hint.name || browser.name,
       bundleId: browser.bundleId,
