@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template only. Runtime writes ~/Library/LaunchAgents/com.johann.zen.secure-vault-orphan-guard.plist
+  with KeepAlive and the absolute script path. Covers Raycast/session-agent death: lock, sleep,
+  wake, and a 5s poll eject the vault when mounted without a live session watchdog.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.johann.zen.secure-vault-orphan-guard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/swift</string>
+    <string>SCRIPT_PATH_PLACEHOLDER/პროფილი.swift</string>
+    <string>--orphan-guard</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/zen-secure-vault-orphan-guard.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/zen-secure-vault-orphan-guard.log</string>
+</dict>
+</plist>

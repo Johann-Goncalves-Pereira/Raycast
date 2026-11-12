@@ -18,7 +18,7 @@ Raycast script that mounts an encrypted DMG vault, launches Zen Browser with a s
 | Icon                | `icon.svg`                            |
 | Author              | Johann-Goncalves-Pereira              |
 
-The script stays alive in the background while Zen is open on a **secure profile** (mounted DMG). It listens for macOS sleep, screen lock, and Zen quit events, then tears down the session and ejects the encrypted volume.
+Raycast mounts the encrypted DMG, launches Zen, then **hands off** monitoring to a LaunchAgent watchdog and exits. The watchdog (not Raycast) listens for sleep, screen lock, and Zen quit, then ejects the vault. A KeepAlive orphan-guard agent covers the case where Raycast or the session agent dies while the DMG is still mounted.
 
 ---
 
@@ -41,7 +41,9 @@ flowchart TB
     subgraph apps [Application Layer]
         Keychain[VaultCredentialStore.retrieveWithBiometrics]
         Zen[ZenBrowserLauncher.launch]
-        Monitor[SecureZenSessionMonitor]
+        Handoff[VaultWatchdog.handoff]
+        Watchdog[LaunchAgent --watchdog]
+        Orphan[LaunchAgent --orphan-guard]
     end
 
     subgraph profiles [Profile Paths]
@@ -58,9 +60,12 @@ flowchart TB
     Mount -->|success| Secure
     Mount -->|failure| ExitFail[exit 1]
     Secure --> Zen
-    Zen --> Monitor
-    Monitor --> Footprint
+    Zen --> Handoff
+    Handoff --> Watchdog
+    Handoff --> Orphan
+    Watchdog --> Footprint
     Footprint --> Eject
+    Orphan -->|orphan mount| Eject
 ```
 
 ---
@@ -81,34 +86,33 @@ flowchart TD
     StdinMount -->|Success| SecureTouchID[SecureVaultWorkflow]
     StdinMount -->|Auth or mount failure| ExitFail([Log and exit 1])
 
-    SecureMounted --> Purge1[HostFootprint purge]
-    SecureTouchID --> Purge2[HostFootprint purge]
-    Purge1 --> Eject1[DiskImage.detach]
-    Purge2 --> Eject2[DiskImage.detach]
-
-    Eject1 --> Success([printSuccess + exit 0])
-    Eject2 --> Success
+    SecureMounted --> Handoff1[VaultWatchdog.handoff]
+    SecureTouchID --> Handoff2[VaultWatchdog.handoff]
+    Handoff1 --> Done([Raycast exits - watchdog owns session])
+    Handoff2 --> Done
 ```
 
 ---
 
 ## Secure Profile Session Lifecycle
 
-The secure vault path always activates `SecureZenSessionMonitor`. There is no personal-profile fallback: Touch ID cancel or a failed mount aborts the script.
+There is no personal-profile fallback: Touch ID cancel or a failed mount aborts the script. After a successful launch, Raycast writes a session file and bootstraps LaunchAgents, then exits.
 
 ```mermaid
 sequenceDiagram
     participant Script
     participant Zen
+    participant Agent as SessionWatchdog
     participant Monitor as SecureZenSessionMonitor
     participant Footprint as HostFootprint
     participant macOS
 
     Script->>Zen: NSWorkspace new instance -no-remote --profile secureVolumeRoot
     Zen-->>Script: securePid
-    Script->>Monitor: waitUntilSessionEnds securePid
-    Monitor->>Monitor: AppKitEventLoop.activate
-    Monitor->>Monitor: register observers
+    Script->>Script: VaultSessionState.save
+    Script->>Agent: launchctl bootstrap --watchdog
+    Script-->>Script: exit 0
+    Agent->>Monitor: waitUntilSessionEnds securePid
 
     loop Every 0.25s RunLoop.default
         Monitor->>Monitor: poll ZenApp.isRunning pid
@@ -116,39 +120,41 @@ sequenceDiagram
 
     alt User quits secure Zen Cmd+Q
         macOS-->>Monitor: didTerminateApplicationNotification for securePid
-        Monitor-->>Script: userQuitZen
+        Monitor-->>Agent: userQuitZen
     else Secure process gone polling fallback
-        Monitor-->>Script: userQuitZen
+        Monitor-->>Agent: userQuitZen
     else Screen lock or sleep
         macOS-->>Monitor: screenIsLocked / willSleep
         Monitor->>Zen: terminateProcessesUsingSecureProfile
-        Monitor-->>Script: systemLockOrSleep
+        Monitor-->>Agent: systemLockOrSleep
     end
 
-    Script->>Zen: terminateProcessesUsingSecureProfile again
-    Script->>Footprint: purgeZenHostCache + scrubZenProfilesIni
-    Script->>Script: DiskImage.detach when mount idle
-    Script->>Script: workflow complete
+    Agent->>Zen: terminateProcessesUsingSecureProfile again
+    Agent->>Footprint: purgeZenHostCache + scrubZenProfilesIni
+    Agent->>Agent: DiskImage.detach when mount idle
+    Agent->>Agent: bootout session agent
 ```
 
 ---
 
 ## SecureZenSessionMonitor — Event Sources
 
+Runs inside the **session LaunchAgent** (`--watchdog`), not inside Raycast.
+
 ```mermaid
 flowchart LR
     subgraph triggers [Triggers vault teardown]
-        Quit[Secure Zen quit<br/>didTerminate for securePid]
-        Poll[ZenApp.isRunning pid false<br/>polling fallback]
-        Lock[Screen lock<br/>CFNotificationCenter com.apple.screenIsLocked]
-        Sleep[System sleep<br/>NSWorkspace.willSleepNotification]
-        Wake[System wake<br/>NSWorkspace.didWakeNotification]
+        Quit[Secure Zen quit didTerminate for securePid]
+        Poll[ZenApp.isRunning pid false polling fallback]
+        Lock[Screen lock CFNotificationCenter]
+        Sleep[System sleep willSleepNotification]
+        Wake[System wake didWakeNotification]
     end
 
     subgraph actions [Actions]
-        NormalStop[Reap lingering helpers then finish userQuitZen]
-        SecurityStop[Acquire IOPMAssertion, urgent SIGKILL + hdiutil detach, finish systemLockOrSleep]
-        WakeAudit[Wake audit: eject if vault still mounted]
+        NormalStop[Reap helpers then finish userQuitZen]
+        SecurityStop[IOPMAssertion urgent SIGKILL plus detach]
+        WakeAudit[Wake audit eject if still mounted]
     end
 
     Quit --> NormalStop
@@ -157,7 +163,7 @@ flowchart LR
     Sleep --> SecurityStop
     Wake --> WakeAudit
 
-    NormalStop --> Purge[HostFootprint purge in SecureVaultWorkflow]
+    NormalStop --> Purge[HostFootprint purge in VaultWatchdog.finishSession]
     SecurityStop --> Purge
     WakeAudit --> Purge
 
@@ -170,9 +176,13 @@ flowchart LR
 | Secure Zen gone (fallback) | `ZenApp.isRunning(pid:)` poll every 0.25s               | Finish monitor (`userQuitZen`)                                  |
 | Screen lock                | `CFNotificationCenter` → `Zen.screenLockedNotification` | Acquire assertion → urgent `SIGKILL` + `DiskImage.detach(urgent:)` → finish (`systemLockOrSleep`) |
 | System sleep               | `NSWorkspace.willSleepNotification`                     | Acquire `IOPMAssertion`, immediate `SIGKILL` + urgent eject under assertion → finish (`systemLockOrSleep`) |
-| System wake                | `NSWorkspace.didWakeNotification` (monitor + workflow)  | Safety audit: if vault still mounted, urgent terminate + eject (even after `hasFinished`) |
+| System wake                | `NSWorkspace.didWakeNotification`                       | Safety audit: if vault still mounted, urgent terminate + eject (even after `hasFinished`) |
 
-> **Note:** Security monitoring applies for every Zen session this script launches (`ZenBrowserLauncher.Session.monitoredSecureVault`). Quit/kill of a daily Zen instance does **not** end the secure session.
+### Orphan guard (Raycast / session-agent death)
+
+`com.johann.zen.secure-vault-orphan-guard` (`--orphan-guard`, KeepAlive) secures the vault when it is mounted and the session watchdog is **not** loaded (after a 15s handoff grace). Triggers: start, sleep, wake, screen lock, and a 5s poll. CLI: `./პროფილი.swift --secure-orphan`.
+
+> **Note:** Session type is `ZenBrowserLauncher.Session.handoffToWatchdog`. Quit/kill of a daily Zen instance does **not** end the secure session.
 
 ---
 
@@ -188,6 +198,9 @@ All paths are defined in `Paths` inside [`პროფილი.swift`](პრ�
 | `Paths.secureProfile`    | Same as `secureVolumeRoot`                               | Zen profile path passed to `--profile`             |
 | `Paths.zenHostCache`     | `~/Library/Caches/app.zen-browser.zen`                   | Host-side Zen cache purged after secure session    |
 | `Paths.zenProfilesIni`   | `~/Library/Application Support/zen/profiles.ini`         | Zen profile registry scrubbed after secure session |
+| `Paths.secureVaultSession` | `~/Library/Application Support/zen/secure-vault-session.json` | Mount + secure PID for the watchdog          |
+| `Paths.sessionWatchdogLabel` | `com.johann.zen.secure-vault-watchdog`               | Per-session LaunchAgent label                      |
+| `Paths.orphanGuardLabel` | `com.johann.zen.secure-vault-orphan-guard`               | KeepAlive orphan LaunchAgent label                 |
 
 Zen identifiers in `Zen`:
 
@@ -210,9 +223,8 @@ Keychain identifiers in `VaultCredentialStore`:
 
 - Skips Touch ID.
 - Opens Zen with secure profile at `secureVolumeRoot`.
-- Monitors session until quit, lock, or sleep.
-- Purges host cache and scrubs `profiles.ini`.
-- Ejects DMG when session ends (with detach retry).
+- Hands off to LaunchAgent watchdog; Raycast exits.
+- Watchdog monitors until quit, lock, or sleep, then purges footprint and ejects.
 
 ### 2. Fresh mount — Touch ID happy path
 
@@ -220,9 +232,8 @@ Keychain identifiers in `VaultCredentialStore`:
 2. Retrieves DMG passphrase from Keychain (Touch ID protected; separate from Mac login password).
 3. Runs `hdiutil attach -stdinpass -nobrowse -mountpoint /Volumes/.com.apple.zen.framework` — no password dialog.
 4. Opens Zen with secure profile.
-5. Monitors session.
-6. Purges host cache and scrubs `profiles.ini`.
-7. Ejects DMG when session ends (with detach retry).
+5. Writes session file, ensures orphan-guard agent, bootstraps session watchdog; Raycast exits.
+6. Watchdog purges host cache / scrubs `profiles.ini` and ejects when the session ends.
 
 ### 3. Touch ID cancelled, failed, unavailable, or not configured
 
@@ -248,22 +259,29 @@ When Touch ID is cancelled, fails, is unavailable, or the vault password is not 
 
 ### 7. Zen manual quit (secure session)
 
-- `SecureZenSessionMonitor` detects quit of the **secure PID** via notification or polling (other Zen processes are ignored).
+- Session watchdog `SecureZenSessionMonitor` detects quit of the **secure PID** via notification or polling (other Zen processes are ignored).
 - Prints `Zen Browser operation completed successfully.`
-- Prints `Zen session ended. Purging host footprint...`
+- `VaultWatchdog.finishSession` purges footprint and ejects.
 - Removes `~/Library/Caches/app.zen-browser.zen` and scrubs secure entries from `profiles.ini`.
-- Prints `Ejecting vault...`
-- Runs `hdiutil detach` (up to 3 attempts, 1s apart; `-force` fallback).
+- Runs `hdiutil detach` (with retry / force fallback when idle).
+- Bootouts the session LaunchAgent and deletes the session file.
 
 ### 8. Screen lock or sleep (secure session)
 
-- Monitor receives lock/sleep event.
-- Prints `System sleep/lock detected — securing vault...`
+- Session watchdog receives lock/sleep event.
+- Prints `System sleep/lock detected — securing vault under power assertion...`
 - Terminates **every process whose argv contains the secure profile path** (`SIGTERM` then `kill -9`). Daily Zen (other profile) is left alone.
 - Waits until those processes are gone before purge/eject.
 - Prints `Vault secured due to system sleep or lock.`
 - Purges host cache and scrubs `profiles.ini`.
 - Ejects DMG (with detach retry). Never force-unmounts while the vault is still held — that would SIGBUS-crash Zen (`backing vnode was force unmounted`).
+
+### 8b. Raycast restart / session-agent death (orphan vault)
+
+- If Raycast does a `--silent-restart` (or is quit) while the vault is open, the old in-process monitor is gone — that used to leave the DMG decrypted overnight.
+- Session monitoring now lives in `com.johann.zen.secure-vault-watchdog`, which outlives Raycast.
+- If that agent also dies while the mount remains, `com.johann.zen.secure-vault-orphan-guard` ejects on lock / sleep / wake / poll.
+- Manual recover: `./პროფილი.swift --secure-orphan`
 
 ### 9. Zen already running at start (daily browser)
 
@@ -364,11 +382,30 @@ Raycast `silent` mode surfaces this output in the Raycast log / terminal when ru
 - **LocalAuthentication** — Touch ID prompt for Keychain vault unlock
 - **Security** — Keychain storage and retrieval of DMG passphrase
 - **Touch ID** Mac (cancelled or unavailable biometry aborts the run)
-- Script must **remain running** for the full secure session (Raycast waits until the script exits)
+- **launchctl** user LaunchAgents (`gui/$(id -u)`) for session watchdog + orphan guard
+- Raycast **exits after handoff**; the LaunchAgent must keep running for lock/sleep eject
 
 ### Run loop constraint
 
 The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.common`. Using `.common` as a run mode causes a CFRunLoop error and breaks event delivery.
+
+### Manual eject checklist
+
+If the vault is left mounted without a watchdog:
+
+```bash
+# List holders
+ps -ax -o pid=,command= | rg -F '/Volumes/.com.apple.zen.framework'
+
+# Or let the script secure it
+./პროფილი.swift --secure-orphan
+
+# Or manually:
+# kill -9 holders, then:
+hdiutil detach '/Volumes/.com.apple.zen.framework' || hdiutil detach -force '/Volumes/.com.apple.zen.framework'
+```
+
+Logs: `/tmp/zen-secure-vault-watchdog.log`, `/tmp/zen-secure-vault-orphan-guard.log`.
 
 ---
 
@@ -381,17 +418,19 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 | Cancel Touch ID                                                     | Logs abort and exits 0; no mount, no Zen, no password dialog                                  |
 | Touch ID unavailable / password not in Keychain                     | Same as cancel: abort, exit 0                                                                 |
 | Wrong stored Keychain password                                      | Mount fails, script exits 1                                                                   |
-| Mount DMG → use Zen → Cmd+Q                                         | Lingering helpers reaped; DMG cleanly ejects; desktop notification displayed; exits 0         |
-| Already-mounted DMG path                                            | Skips Touch ID, monitors, purges footprint, ejects on quit                                    |
+| Mount DMG → use Zen → Cmd+Q                                         | Raycast exits after handoff; watchdog reaps helpers, ejects DMG, shows notification           |
+| Already-mounted DMG path                                            | Skips Touch ID, hands off to watchdog, ejects on quit                                         |
 | Lock screen (⌃⌘Q) during secure session                             | Secure PID killed only; daily Zen stays; footprint purged; DMG ejected; notification shown     |
 | Close lid / sleep during secure session                             | IOPMAssertion holds sleep; urgent SIGKILL + detach under assertion before sleep; no leftover mount |
-| Wake machine after sleep                                            | didWake + workflow wake audit eject leftover mounts if sleep raced teardown                  |
+| Wake machine after sleep                                            | didWake wake audit eject leftover mounts if sleep raced teardown                              |
+| Kill / restart Raycast while vault open                             | Session watchdog keeps running; lock/sleep still ejects                                       |
+| Kill session watchdog while vault open                              | Orphan guard ejects on lock / sleep / wake / poll                                             |
 | Daily Zen already open → run პროფილი                                | Second Zen process with secure profile; daily Zen stays                                       |
 | Quit daily Zen during secure session                                | Secure session continues; monitor does not end early                                          |
 | Cmd+Q only the secure window                                        | Session ends, vault ejects; daily Zen stays; notification confirms ejection                   |
 | Missing DMG file                                                    | Script displays error notification and exits with code 1                                      |
 | Quick Cmd+Q after browsing                                          | Detach retry succeeds despite busy resource; notification shown                               |
-| Detach failure fallback                                             | Forced detach executes; if failed, loud warning notification shown and script exits 1        |
+| Detach failure fallback                                             | Forced detach executes; if failed, loud warning notification shown                            |
 | After secure session                                                | `~/Library/Caches/app.zen-browser.zen` removed; no `.com.apple.zen.framework` in profiles.ini |
 | `ps aux` during secure session                                      | Shows `/Volumes/.com.apple.zen.framework`, not `Profile Secure`; two Zen PIDs if daily open   |
 | Run from CLI: `./პროფილი.swift`                                     | Same behavior as Raycast                                                                      |
@@ -402,7 +441,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 
 ```
 პროფილი.swift
-├── Paths / Zen / SystemPaths          — paths and identifiers
+├── Paths / ScriptLocation / Zen / SystemPaths — paths and identifiers
 ├── Log / DesktopNotification          — logging and Notification Center alerts
 ├── PowerManagement                    — IOKit sleep prevention assertions
 ├── FileSystem                         — filesystem helpers
@@ -411,13 +450,19 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 ├── DiskImage                          — attach, detach, mount status
 ├── HostFootprint                      — cache purge + profiles.ini scrub
 ├── AppKitEventLoop                    — CLI notification bootstrap
+├── VaultSessionState                  — session JSON (pid + mount)
+├── VaultLaunchAgent                   — write/bootstrap/bootout LaunchAgents
+├── VaultWatchdog                      — handoff, --watchdog, --orphan-guard, finishSession
 ├── VaultCredentialStore               — Touch ID Keychain store/retrieve
 ├── VaultCredentialSetup               — --store-vault-password CLI mode
 ├── ZenApp                             — process lifecycle and mount inspection
 ├── SecureZenSessionMonitor            — sleep / wake / lock / quit monitoring
-├── ZenBrowserLauncher                 — open Zen (monitored session)
-├── SecureVaultWorkflow                — secure profile + verified eject
-└── ProfileLauncher                    — entry orchestrator
+├── ZenBrowserLauncher                 — open Zen + handoffToWatchdog
+├── SecureVaultWorkflow                — mount path → launch + handoff
+└── ProfileLauncher                    — Raycast entry orchestrator
+
+com.johann.zen.secure-vault-watchdog.plist      — template (runtime writes ~/Library/LaunchAgents)
+com.johann.zen.secure-vault-orphan-guard.plist  — template (KeepAlive orphan guard)
 ```
 
 ---
@@ -446,7 +491,7 @@ The monitor uses `RunLoop.main.run(mode: .default, before:)` — **not** `.commo
 3. Update the affected **diagrams** (mermaid blocks must use valid syntax: no spaces in node IDs, no HTML in labels).
 4. Update the **tables** and **behavior list** to match the new logic exactly.
 5. Add or remove **test scenarios** if behavior changed.
-6. Verify diagrams still reflect the real call order (especially `SecureVaultWorkflow` → `ZenBrowserLauncher` → `SecureZenSessionMonitor` → `HostFootprint` → `DiskImage.detach`).
+6. Verify diagrams still reflect the real call order (`SecureVaultWorkflow` → `ZenBrowserLauncher` → `VaultWatchdog.handoff` → LaunchAgent `--watchdog` → `SecureZenSessionMonitor` → `finishSession`).
 
 ### Diagram rules used here
 

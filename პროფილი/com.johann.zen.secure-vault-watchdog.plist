@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template only. Runtime writes ~/Library/LaunchAgents/com.johann.zen.secure-vault-watchdog.plist
+  with the absolute path to პროფილი.swift substituted via VaultLaunchAgent.writePlist.
+  Session state (mount + pid) lives in ~/Library/Application Support/zen/secure-vault-session.json.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.johann.zen.secure-vault-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/swift</string>
+    <string>SCRIPT_PATH_PLACEHOLDER/პროფილი.swift</string>
+    <string>--watchdog</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/zen-secure-vault-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/zen-secure-vault-watchdog.log</string>
+</dict>
+</plist>

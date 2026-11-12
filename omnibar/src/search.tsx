@@ -38,6 +38,7 @@ import {
   findBrowserByBundleId,
   type BrowserDefinition,
 } from "./browsers";
+import { rememberFocusedProcess } from "./focused-browser";
 import { contextFromHint } from "./hint-context";
 import { resolveOmnibarContext } from "./resolve-frontmost-browser";
 import { queryStateRecord } from "./dismiss";
@@ -212,6 +213,9 @@ export default function Command() {
     revalidate: revalidateContext,
   } = usePromise(async () => resolveOmnibarContext(prefs));
   const context = resolvedContext ?? hinted;
+  if (context?.allowed) {
+    rememberFocusedProcess(context.browser.bundleId, context.focusedPid);
+  }
   const browserIdRef = useRef<string | undefined>(undefined);
   browserIdRef.current = context?.allowed
     ? context.browser.bundleId
@@ -699,7 +703,9 @@ export default function Command() {
         ? debouncedSearchText.trim()
         : "";
   const suggestionKind = suggestionKindForScope({
-    bangId: scopedBang?.id ?? (scopedSite && isYouTubeEngine(scopedSite) ? "youtube" : undefined),
+    bangId:
+      scopedBang?.id ??
+      (scopedSite && isYouTubeEngine(scopedSite) ? "youtube" : undefined),
     domains: scopedBang?.domains ?? scopedSite?.domains,
   });
 
@@ -1144,7 +1150,12 @@ export default function Command() {
     userEdited.current = true;
     ignoreEmptySearch.current = true;
     textVia.current = "scope";
-    recordAction({ kind: "scope", phase: "enter", site: site.id, name: site.name });
+    recordAction({
+      kind: "scope",
+      phase: "enter",
+      site: site.id,
+      name: site.name,
+    });
     setScopedBang(null);
     setScopedSite(site);
     setSearchText("");
@@ -1357,7 +1368,10 @@ export default function Command() {
   ) {
     const historyPreview = quickPicks(historyItems);
     const suggestionPreview = quickPicks(suggestionItems);
-    if ((historyPreview.length === 0 && suggestionPreview.length === 0) || !app) {
+    if (
+      (historyPreview.length === 0 && suggestionPreview.length === 0) ||
+      !app
+    ) {
       return null;
     }
     return (
@@ -2121,12 +2135,9 @@ export default function Command() {
                 <HistoryListItem
                   key={historyItemId(item.url)}
                   item={item}
-                  icon={websiteIcon(
-                    scopedBang?.domains ?? scopedSite?.domains,
-                  )}
+                  icon={websiteIcon(scopedBang?.domains ?? scopedSite?.domains)}
                   tag={{
-                    value:
-                      scopedBang?.trigger ?? scopedSite?.name ?? "History",
+                    value: scopedBang?.trigger ?? scopedSite?.name ?? "History",
                     color: scopedBang
                       ? brandColor(scopedBang.id, scopedBang.domains)
                       : scopedSite
@@ -2204,70 +2215,72 @@ export default function Command() {
             )}
           {listAfterQuick(uniqueLabels(scopedSuggestions)).length > 0 &&
             (scopedSite || scopedBang) && (
-            <List.Section title="Suggestions">
-              {listAfterQuick(uniqueLabels(scopedSuggestions)).map((suggestion) => {
-                const scopeName =
-                  scopedSite?.name ?? scopedBang?.name ?? "Search";
-                const buildScopedUrl = (q: string) => {
-                  if (scopedSite) return scopedSite.buildUrl(q);
-                  if (scopedBang) return buildBangSearchUrl(scopedBang, q);
-                  return q;
-                };
-                return (
-                  <List.Item
-                    key={`sug-${suggestion}`}
-                    title={suggestion}
-                    icon={websiteIcon(
-                      scopedBang?.domains ?? scopedSite?.domains,
-                    )}
-                    accessories={[
-                      {
-                        tag: {
-                          value: scopeName,
-                          color: scopedBang
-                            ? brandColor(scopedBang.id, scopedBang.domains)
-                            : scopedSite
-                              ? brandColor(
-                                  scopedSite.id,
-                                  scopedSite.domains,
-                                  scopedSite.color,
-                                )
-                              : Color.SecondaryText,
-                        },
-                      },
-                    ]}
-                    actions={
-                      <ActionPanel>
-                        <Action
-                          title={`Search ${scopeName}`}
-                          icon={Icon.MagnifyingGlass}
-                          onAction={() =>
-                            runAndClose(async () => {
-                              if (!app) return;
-                              await openInBrowser(
-                                app,
-                                buildScopedUrl(suggestion),
-                              );
-                            })
-                          }
-                        />
-                        <Action
-                          title="Exit Scope"
-                          icon={Icon.Undo}
-                          onAction={() => {
-                            setScopedSite(null);
-                            setScopedBang(null);
-                          }}
-                        />
-                        {closeAction()}
-                        {exactSearchAction()}
-                      </ActionPanel>
-                    }
-                  />
-                );
-              })}
-            </List.Section>
-          )}
+              <List.Section title="Suggestions">
+                {listAfterQuick(uniqueLabels(scopedSuggestions)).map(
+                  (suggestion) => {
+                    const scopeName =
+                      scopedSite?.name ?? scopedBang?.name ?? "Search";
+                    const buildScopedUrl = (q: string) => {
+                      if (scopedSite) return scopedSite.buildUrl(q);
+                      if (scopedBang) return buildBangSearchUrl(scopedBang, q);
+                      return q;
+                    };
+                    return (
+                      <List.Item
+                        key={`sug-${suggestion}`}
+                        title={suggestion}
+                        icon={websiteIcon(
+                          scopedBang?.domains ?? scopedSite?.domains,
+                        )}
+                        accessories={[
+                          {
+                            tag: {
+                              value: scopeName,
+                              color: scopedBang
+                                ? brandColor(scopedBang.id, scopedBang.domains)
+                                : scopedSite
+                                  ? brandColor(
+                                      scopedSite.id,
+                                      scopedSite.domains,
+                                      scopedSite.color,
+                                    )
+                                  : Color.SecondaryText,
+                            },
+                          },
+                        ]}
+                        actions={
+                          <ActionPanel>
+                            <Action
+                              title={`Search ${scopeName}`}
+                              icon={Icon.MagnifyingGlass}
+                              onAction={() =>
+                                runAndClose(async () => {
+                                  if (!app) return;
+                                  await openInBrowser(
+                                    app,
+                                    buildScopedUrl(suggestion),
+                                  );
+                                })
+                              }
+                            />
+                            <Action
+                              title="Exit Scope"
+                              icon={Icon.Undo}
+                              onAction={() => {
+                                setScopedSite(null);
+                                setScopedBang(null);
+                              }}
+                            />
+                            {closeAction()}
+                            {exactSearchAction()}
+                          </ActionPanel>
+                        }
+                      />
+                    );
+                  },
+                )}
+              </List.Section>
+            )}
         </>
       ) : (
         <>
@@ -2277,37 +2290,37 @@ export default function Command() {
 
           {listAfterQuick(uniqueLabels(globalSuggestions)).length > 0 &&
             app && (
-            <List.Section title="Suggestions">
-              {listAfterQuick(uniqueLabels(globalSuggestions))
-                .slice(0, 5)
-                .map((suggestion) => (
-                <List.Item
-                  key={`gsug-${suggestion}`}
-                  title={`Search “${suggestion}”`}
-                  icon={Icon.Text}
-                  actions={
-                    <ActionPanel>
-                      <Action
-                        title="Search Web"
-                        icon={Icon.Globe}
-                        onAction={() =>
-                          runAndClose(async () => {
-                            await openQueryInBrowser(app, suggestion);
-                          })
-                        }
-                      />
-                      {tabBang
-                        ? tabScopeAction()
-                        : jumpTargetId && (
-                            <JumpToAction onJump={jumpToAction} />
-                          )}
-                      {exactSearchAction()}
-                    </ActionPanel>
-                  }
-                />
-              ))}
-            </List.Section>
-          )}
+              <List.Section title="Suggestions">
+                {listAfterQuick(uniqueLabels(globalSuggestions))
+                  .slice(0, 5)
+                  .map((suggestion) => (
+                    <List.Item
+                      key={`gsug-${suggestion}`}
+                      title={`Search “${suggestion}”`}
+                      icon={Icon.Text}
+                      actions={
+                        <ActionPanel>
+                          <Action
+                            title="Search Web"
+                            icon={Icon.Globe}
+                            onAction={() =>
+                              runAndClose(async () => {
+                                await openQueryInBrowser(app, suggestion);
+                              })
+                            }
+                          />
+                          {tabBang
+                            ? tabScopeAction()
+                            : jumpTargetId && (
+                                <JumpToAction onJump={jumpToAction} />
+                              )}
+                          {exactSearchAction()}
+                        </ActionPanel>
+                      }
+                    />
+                  ))}
+              </List.Section>
+            )}
 
           {!isLoading &&
             tabs.length === 0 &&

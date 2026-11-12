@@ -35,6 +35,29 @@ enum Paths {
     static let secureProfile = secureVolumeRoot
     static let zenHostCache = "~/Library/Caches/app.zen-browser.zen"
     static let zenProfilesIni = "~/Library/Application Support/zen/profiles.ini"
+    static let secureVaultSession = NSString(
+        string: "~/Library/Application Support/zen/secure-vault-session.json"
+    ).expandingTildeInPath
+    static let launchAgentsDirectory = NSString(string: "~/Library/LaunchAgents").expandingTildeInPath
+    static let sessionWatchdogLabel = "com.johann.zen.secure-vault-watchdog"
+    static let orphanGuardLabel = "com.johann.zen.secure-vault-orphan-guard"
+    static let sessionWatchdogPlist = launchAgentsDirectory + "/\(sessionWatchdogLabel).plist"
+    static let orphanGuardPlist = launchAgentsDirectory + "/\(orphanGuardLabel).plist"
+    static let watchdogLog = "/tmp/zen-secure-vault-watchdog.log"
+    static let orphanGuardLog = "/tmp/zen-secure-vault-orphan-guard.log"
+}
+
+enum ScriptLocation {
+    /// Absolute path to this script (Raycast / `swift script.swift` / LaunchAgent).
+    static var path: String {
+        let candidates = CommandLine.arguments.filter { $0.hasSuffix(".swift") }
+        let raw = candidates.first ?? CommandLine.arguments[0]
+        if raw.hasPrefix("/") {
+            return raw
+        }
+        let cwd = FileManager.default.currentDirectoryPath
+        return URL(fileURLWithPath: cwd).appendingPathComponent(raw).standardizedFileURL.path
+    }
 }
 
 enum Zen {
@@ -47,6 +70,8 @@ enum SystemPaths {
     static let kill = "/usr/bin/kill"
     static let ps = "/bin/ps"
     static let lsof = "/usr/sbin/lsof"
+    static let launchctl = "/bin/launchctl"
+    static let swift = "/usr/bin/swift"
     static let volumesRoot = "/Volumes/"
 }
 
@@ -550,6 +575,390 @@ enum AppKitEventLoop {
     static func activate() {
         NSApplication.shared.setActivationPolicy(.accessory)
     }
+}
+
+struct VaultSessionState: Codable {
+    var securePid: pid_t
+    var mountPoint: String
+    var createdAt: Date
+
+    static func load() -> VaultSessionState? {
+        let url = URL(fileURLWithPath: Paths.secureVaultSession)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(VaultSessionState.self, from: data)
+    }
+
+    static func save(securePid: pid_t, mountPoint: String) -> Bool {
+        let state = VaultSessionState(securePid: securePid, mountPoint: mountPoint, createdAt: Date())
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            let directory = URL(fileURLWithPath: Paths.secureVaultSession).deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try encoder.encode(state)
+            try data.write(to: URL(fileURLWithPath: Paths.secureVaultSession), options: .atomic)
+            return true
+        } catch {
+            Log.error("Failed to write vault session file: \(error)")
+            return false
+        }
+    }
+
+    static func remove() {
+        try? FileManager.default.removeItem(atPath: Paths.secureVaultSession)
+    }
+}
+
+enum VaultLaunchAgent {
+    private static var guiDomain: String {
+        "gui/\(getuid())"
+    }
+
+    static func isLoaded(label: String) -> Bool {
+        do {
+            let (exitCode, _) = try ProcessRunner.capture(
+                executable: SystemPaths.launchctl,
+                arguments: ["print", "\(guiDomain)/\(label)"]
+            )
+            return exitCode == 0
+        } catch {
+            return false
+        }
+    }
+
+    static func isSessionWatchdogLoaded() -> Bool {
+        isLoaded(label: Paths.sessionWatchdogLabel)
+    }
+
+    static func isOrphanGuardLoaded() -> Bool {
+        isLoaded(label: Paths.orphanGuardLabel)
+    }
+
+    static func bootout(label: String) {
+        do {
+            _ = try ProcessRunner.capture(
+                executable: SystemPaths.launchctl,
+                arguments: ["bootout", "\(guiDomain)/\(label)"]
+            )
+        } catch {
+            // Already unloaded is fine.
+        }
+    }
+
+    static func bootoutSessionWatchdog() {
+        bootout(label: Paths.sessionWatchdogLabel)
+    }
+
+    static func writePlist(
+        label: String,
+        destination: String,
+        modeArgument: String,
+        keepAlive: Bool,
+        logPath: String
+    ) -> Bool {
+        let keepAliveXML = keepAlive
+            ? "  <key>KeepAlive</key>\n  <true/>\n"
+            : ""
+        let scriptPath = ScriptLocation.path
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key>
+          <string>\(label)</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>\(SystemPaths.swift)</string>
+            <string>\(scriptPath)</string>
+            <string>\(modeArgument)</string>
+          </array>
+        \(keepAliveXML)  <key>RunAtLoad</key>
+          <true/>
+          <key>StandardOutPath</key>
+          <string>\(logPath)</string>
+          <key>StandardErrorPath</key>
+          <string>\(logPath)</string>
+        </dict>
+        </plist>
+        """
+
+        do {
+            try FileManager.default.createDirectory(
+                atPath: Paths.launchAgentsDirectory,
+                withIntermediateDirectories: true
+            )
+            try plist.write(toFile: destination, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            Log.error("Failed to write LaunchAgent plist \(destination): \(error)")
+            return false
+        }
+    }
+
+    static func bootstrap(plistPath: String, label: String) -> Bool {
+        bootout(label: label)
+        do {
+            let (exitCode, output) = try ProcessRunner.capture(
+                executable: SystemPaths.launchctl,
+                arguments: ["bootstrap", guiDomain, plistPath]
+            )
+            if exitCode != 0 {
+                Log.error("launchctl bootstrap \(label) failed (\(exitCode)): \(output)")
+                return false
+            }
+            Log.status("LaunchAgent bootstrapped: \(label)")
+            return true
+        } catch {
+            Log.error("launchctl bootstrap \(label) error: \(error)")
+            return false
+        }
+    }
+
+    static func ensureOrphanGuardInstalled() -> Bool {
+        guard writePlist(
+            label: Paths.orphanGuardLabel,
+            destination: Paths.orphanGuardPlist,
+            modeArgument: "--orphan-guard",
+            keepAlive: true,
+            logPath: Paths.orphanGuardLog
+        ) else {
+            return false
+        }
+
+        if isOrphanGuardLoaded() {
+            return true
+        }
+
+        return bootstrap(plistPath: Paths.orphanGuardPlist, label: Paths.orphanGuardLabel)
+    }
+
+    static func startSessionWatchdog() -> Bool {
+        guard writePlist(
+            label: Paths.sessionWatchdogLabel,
+            destination: Paths.sessionWatchdogPlist,
+            modeArgument: "--watchdog",
+            keepAlive: false,
+            logPath: Paths.watchdogLog
+        ) else {
+            return false
+        }
+        return bootstrap(plistPath: Paths.sessionWatchdogPlist, label: Paths.sessionWatchdogLabel)
+    }
+}
+
+enum VaultWatchdog {
+    private static let handoffGraceSeconds: TimeInterval = 15
+
+    static func handoff(securePid: pid_t, mountPoint: String) -> Bool {
+        guard VaultSessionState.save(securePid: securePid, mountPoint: mountPoint) else {
+            return false
+        }
+
+        guard VaultLaunchAgent.ensureOrphanGuardInstalled() else {
+            Log.error("Failed to install orphan-guard LaunchAgent")
+            VaultSessionState.remove()
+            return false
+        }
+
+        guard VaultLaunchAgent.startSessionWatchdog() else {
+            Log.error("Failed to start session watchdog LaunchAgent")
+            VaultSessionState.remove()
+            return false
+        }
+
+        Log.success("Watchdog handoff complete (PID \(securePid), mount \(mountPoint))")
+        return true
+    }
+
+    /// Mount present with no live session agent (after handoff grace).
+    static func shouldSecureOrphan() -> Bool {
+        guard FileSystem.exists(at: Paths.secureVolumeRoot) else { return false }
+        if VaultLaunchAgent.isSessionWatchdogLoaded() { return false }
+
+        guard let session = VaultSessionState.load() else {
+            return true
+        }
+
+        if Date().timeIntervalSince(session.createdAt) < handoffGraceSeconds {
+            return false
+        }
+
+        return true
+    }
+
+    static func secureOrphanVault(reason: String) {
+        PowerManagement.acquireSleepAssertion()
+        defer { PowerManagement.releaseSleepAssertion() }
+
+        Log.status("Orphan vault secure (\(reason)) — urgent terminate + eject")
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
+        _ = ZenApp.waitUntilSecureProfileGone(timeout: 2)
+        HostFootprint.purgeZenHostCache()
+        HostFootprint.scrubZenProfilesIni()
+
+        if DiskImage.detach(at: Paths.secureVolumeRoot, urgent: true) {
+            DesktopNotification.display(
+                title: "Zen Browser",
+                message: "🔒 Orphaned encrypted profile secured and ejected."
+            )
+            Log.success("Orphan vault ejected")
+        } else {
+            DesktopNotification.display(
+                title: "Zen Browser",
+                message: "❌ Warning: Orphaned encrypted profile still mounted!"
+            )
+            Log.error("Orphan vault eject failed")
+        }
+
+        VaultSessionState.remove()
+    }
+
+    static func finishSession(
+        mountPoint: String,
+        endReason: SecureSessionEnd,
+        didUrgentEject: Bool
+    ) {
+        let isUrgent = endReason == .systemLockOrSleep
+        if didUrgentEject {
+            Log.status("Sleep/lock fast-path already ejected vault; verifying host state...")
+        }
+
+        Log.status("Zen session ended. Ensuring vault is released before eject...")
+        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: isUrgent)
+        let goneTimeout: TimeInterval = isUrgent ? 2 : 8
+        _ = ZenApp.waitUntilSecureProfileGone(timeout: goneTimeout)
+
+        Log.status("Zen session ended. Purging host footprint...")
+        HostFootprint.purgeZenHostCache()
+        HostFootprint.scrubZenProfilesIni()
+
+        Log.status("Ejecting vault...")
+        if !DiskImage.detach(at: mountPoint, urgent: isUrgent) {
+            Log.error("Failed to eject DMG properly")
+            DesktopNotification.display(
+                title: "Zen Browser",
+                message: "❌ Warning: Failed to eject encrypted profile. Vault is still mounted!"
+            )
+        } else {
+            DesktopNotification.display(
+                title: "Zen Browser",
+                message: "🔒 Encrypted profile secured and ejected."
+            )
+        }
+
+        VaultSessionState.remove()
+        PowerManagement.releaseSleepAssertion()
+    }
+
+    static func runWatchdog() {
+        AppKitEventLoop.activate()
+
+        if shouldSecureOrphan() {
+            secureOrphanVault(reason: "watchdog start")
+            VaultLaunchAgent.bootoutSessionWatchdog()
+            exit(0)
+        }
+
+        guard let session = VaultSessionState.load() else {
+            Log.status("Watchdog: no session file — nothing to monitor")
+            VaultLaunchAgent.bootoutSessionWatchdog()
+            exit(0)
+        }
+
+        guard FileSystem.exists(at: session.mountPoint) else {
+            Log.status("Watchdog: session mount missing — clearing session")
+            VaultSessionState.remove()
+            VaultLaunchAgent.bootoutSessionWatchdog()
+            exit(0)
+        }
+
+        Log.status("Watchdog monitoring secure PID \(session.securePid) at \(session.mountPoint)")
+        let monitor = SecureZenSessionMonitor(securePid: session.securePid, mountPoint: session.mountPoint)
+        let endReason = monitor.waitUntilSessionEnds()
+
+        switch endReason {
+        case .userQuitZen:
+            Log.success("Zen Browser operation completed successfully.")
+        case .systemLockOrSleep:
+            Log.success("Vault secured due to system sleep or lock.")
+        }
+
+        finishSession(
+            mountPoint: session.mountPoint,
+            endReason: endReason,
+            didUrgentEject: monitor.didUrgentEject
+        )
+        VaultLaunchAgent.bootoutSessionWatchdog()
+        exit(0)
+    }
+
+    static func runOrphanGuard() {
+        AppKitEventLoop.activate()
+        Log.status("Orphan guard started")
+
+        if shouldSecureOrphan() {
+            secureOrphanVault(reason: "orphan-guard start")
+        }
+
+        let token = Unmanaged.passRetained(OrphanGuardCallbacks()).toOpaque()
+
+        let center = NSWorkspace.shared.notificationCenter
+        _ = center.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            if shouldSecureOrphan() {
+                secureOrphanVault(reason: "orphan-guard sleep")
+            }
+        }
+        _ = center.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            if shouldSecureOrphan() {
+                secureOrphanVault(reason: "orphan-guard wake")
+            }
+        }
+
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDistributedCenter(),
+            token,
+            { _, _, _, _, _ in
+                DispatchQueue.main.async {
+                    if VaultWatchdog.shouldSecureOrphan() {
+                        VaultWatchdog.secureOrphanVault(reason: "orphan-guard lock")
+                    }
+                }
+            },
+            Zen.screenLockedNotification as CFString,
+            nil,
+            .deliverImmediately
+        )
+
+        var lastPoll = Date.distantPast
+        while true {
+            RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.5))
+            let now = Date()
+            if now.timeIntervalSince(lastPoll) >= 5 {
+                lastPoll = now
+                if shouldSecureOrphan() {
+                    secureOrphanVault(reason: "orphan-guard poll")
+                }
+            }
+        }
+    }
+
+    /// Retained token holder for CFNotificationCenter orphan-guard observer.
+    private final class OrphanGuardCallbacks {}
 }
 
 enum VaultCredentialStore {
@@ -1257,7 +1666,8 @@ final class SecureZenSessionMonitor {
 
 enum ZenBrowserLauncher {
     enum Session {
-        case monitoredSecureVault
+        /// Launch Zen, then hand monitoring to the LaunchAgent watchdog (Raycast exits).
+        case handoffToWatchdog
         case immediate
     }
 
@@ -1265,11 +1675,11 @@ enum ZenBrowserLauncher {
         profilePath: String?,
         session: Session,
         mountPoint: String
-    ) -> (launched: Bool, endReason: SecureSessionEnd?, didUrgentEject: Bool) {
+    ) -> Bool {
         guard FileSystem.exists(at: Paths.zenApp) else {
             Log.error("Zen Browser application not found at '\(Paths.zenApp)'.")
             Log.error("Please ensure Zen Browser is installed at the correct location.")
-            return (false, nil, false)
+            return false
         }
 
         let resolvedProfile: String?
@@ -1281,117 +1691,62 @@ enum ZenBrowserLauncher {
             Log.status("Opening Zen Browser with default profile...")
         }
 
-        if case .monitoredSecureVault = session {
-            Log.status("Zen Browser will open as a new instance. The script will wait for it to be closed before continuing.")
-            Log.status("Monitoring for system sleep and screen lock events.")
+        if case .handoffToWatchdog = session {
+            Log.status("Zen Browser will open as a new instance.")
+            Log.status("Session monitoring will run in a LaunchAgent watchdog (survives Raycast restart).")
         }
 
         AppKitEventLoop.activate()
 
         guard let securePid = ZenApp.openNewInstance(profilePath: resolvedProfile) else {
             Log.error("Zen Browser did not start within the expected time.")
-            return (false, nil, false)
+            return false
         }
 
         Log.status("Secure Zen process PID: \(securePid)")
 
         switch session {
-        case .monitoredSecureVault:
-            let monitor = SecureZenSessionMonitor(securePid: securePid, mountPoint: mountPoint)
-            let endReason = monitor.waitUntilSessionEnds()
-
-            switch endReason {
-            case .userQuitZen:
-                Log.success("Zen Browser operation completed successfully.")
-            case .systemLockOrSleep:
-                Log.success("Vault secured due to system sleep or lock.")
+        case .handoffToWatchdog:
+            guard VaultWatchdog.handoff(securePid: securePid, mountPoint: mountPoint) else {
+                Log.error("Failed to hand off secure session to watchdog")
+                _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
+                _ = DiskImage.detach(at: mountPoint, urgent: true)
+                VaultSessionState.remove()
+                return false
             }
-
-            return (true, endReason, monitor.didUrgentEject)
+            Log.success("Secure session handed off to LaunchAgent watchdog.")
+            return true
 
         case .immediate:
             Log.success("Zen Browser operation completed successfully.")
-            return (true, nil, false)
+            return true
         }
     }
 }
 
 enum SecureVaultWorkflow {
     static func run(at mountPoint: String) -> Bool {
-        // Cover the entire run (monitor + post-quit cleanup) so wake during eject still audits.
-        let wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { _ in
-            guard FileSystem.exists(at: mountPoint) else { return }
-            Log.status("Workflow wake audit: vault still mounted — forcing urgent eject")
-            PowerManagement.acquireSleepAssertion()
-            _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: true)
-            _ = DiskImage.detach(at: mountPoint, urgent: true)
-        }
-
-        defer {
-            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
-            PowerManagement.releaseSleepAssertion()
-        }
-
         Log.success("Profile successfully decrypted. Opening Zen Browser with secure profile...")
 
-        let launchResult: (launched: Bool, endReason: SecureSessionEnd?, didUrgentEject: Bool)
-
+        let launched: Bool
         if FileSystem.exists(at: Paths.secureProfile) {
             Log.status("Secure profile found at: \(Paths.secureProfile)")
-            launchResult = ZenBrowserLauncher.launch(
+            launched = ZenBrowserLauncher.launch(
                 profilePath: Paths.secureProfile,
-                session: .monitoredSecureVault,
+                session: .handoffToWatchdog,
                 mountPoint: mountPoint
             )
         } else {
             Log.error("Secure profile not found at '\(Paths.secureProfile)'")
             Log.status("Opening Zen Browser without specific profile...")
-            launchResult = ZenBrowserLauncher.launch(
+            launched = ZenBrowserLauncher.launch(
                 profilePath: nil,
-                session: .monitoredSecureVault,
+                session: .handoffToWatchdog,
                 mountPoint: mountPoint
             )
         }
 
-        guard launchResult.launched else {
-            return false
-        }
-
-        let isUrgent = launchResult.endReason == .systemLockOrSleep
-        if launchResult.didUrgentEject {
-            Log.status("Sleep/lock fast-path already ejected vault; verifying host state...")
-        }
-
-        Log.status("Zen session ended. Ensuring vault is released before eject...")
-        _ = ZenApp.terminateProcessesUsingSecureProfile(urgent: isUrgent)
-        let goneTimeout: TimeInterval = isUrgent ? 2 : 8
-        _ = ZenApp.waitUntilSecureProfileGone(timeout: goneTimeout)
-
-        Log.status("Zen session ended. Purging host footprint...")
-        HostFootprint.purgeZenHostCache()
-        HostFootprint.scrubZenProfilesIni()
-
-        Log.status("Ejecting vault...")
-
-        if !DiskImage.detach(at: mountPoint, urgent: isUrgent) {
-            Log.error("Failed to eject DMG properly")
-            DesktopNotification.display(
-                title: "Zen Browser",
-                message: "❌ Warning: Failed to eject encrypted profile. Vault is still mounted!"
-            )
-            return false
-        }
-
-        // Sleep fast-path may have already ejected; still confirm visibly on wake/quit paths.
-        DesktopNotification.display(
-            title: "Zen Browser",
-            message: "🔒 Encrypted profile secured and ejected."
-        )
-        return true
+        return launched
     }
 }
 
@@ -1444,12 +1799,29 @@ enum ProfileLauncher {
             }
         }
 
-        Log.success("Zen Vault secured and ejected successfully!")
+        Log.success("Zen vault open — watchdog LaunchAgent owns lock/sleep eject.")
+        DesktopNotification.display(
+            title: "Zen Browser",
+            message: "🔓 Encrypted profile open. Watchdog will eject on lock, sleep, or quit."
+        )
     }
 }
 
-if CommandLine.arguments.contains("--store-vault-password") {
+let arguments = CommandLine.arguments
+if arguments.contains("--store-vault-password") {
     VaultCredentialSetup.run()
+} else if arguments.contains("--watchdog") {
+    VaultWatchdog.runWatchdog()
+} else if arguments.contains("--orphan-guard") {
+    VaultWatchdog.runOrphanGuard()
+} else if arguments.contains("--secure-orphan") {
+    AppKitEventLoop.activate()
+    if VaultWatchdog.shouldSecureOrphan() {
+        VaultWatchdog.secureOrphanVault(reason: "secure-orphan CLI")
+        exit(0)
+    }
+    Log.status("No orphan vault to secure")
+    exit(0)
 } else {
     ProfileLauncher.run()
 }

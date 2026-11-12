@@ -36,7 +36,7 @@ func supportDir() -> String {
   NSHomeDirectory() + "/Library/Application Support/omnibar"
 }
 
-func writeLastBrowserHint(bundleId: String, name: String) {
+func writeLastBrowserHint(bundleId: String, name: String, pid: Int32) {
   let dir = supportDir()
   do {
     try FileManager.default.createDirectory(
@@ -49,11 +49,14 @@ func writeLastBrowserHint(bundleId: String, name: String) {
   }
 
   let recordedAt = Int(Date().timeIntervalSince1970 * 1000)
-  let payload: [String: Any] = [
+  var payload: [String: Any] = [
     "bundleId": bundleId,
     "name": name,
     "recordedAt": recordedAt,
   ]
+  if pid > 0 {
+    payload["pid"] = Int(pid)
+  }
   guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
         let json = String(data: data, encoding: .utf8) else {
     log("Failed to encode last-browser hint")
@@ -444,7 +447,11 @@ final class HotKeyController {
     let name = front?.localizedName ?? ""
     log("Cmd+P fired; frontmost=\(bundleId)")
     if !bundleId.isEmpty {
-      writeLastBrowserHint(bundleId: bundleId, name: name)
+      writeLastBrowserHint(
+        bundleId: bundleId,
+        name: name,
+        pid: front?.processIdentifier ?? 0
+      )
     }
     openOmnibar(bundleId: bundleId)
     return noErr
